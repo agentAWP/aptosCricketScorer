@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { listMatches, upsertMatch } from './db'
 
 const STORAGE_KEY = 'cricket-react-current-v1'
 const HISTORY_KEY = 'cricket-react-history-v1'
@@ -474,14 +475,39 @@ export default function App() {
 
   useEffect(() => {
     const current = localStorage.getItem(STORAGE_KEY)
-    const savedHistory = localStorage.getItem(HISTORY_KEY)
     if (current) setMatch(JSON.parse(current))
-    if (savedHistory) setHistory(normalizeHistoryItems(JSON.parse(savedHistory)))
+
+    async function loadRemoteHistory() {
+      try {
+        const rows = await listMatches()
+        const mapped = rows
+          .filter(row => row.match_json)
+          .map((row, index) => ({
+            id: row.app_match_id || row.id,
+            gameNumber: index + 1,
+            savedAt: row.updated_at || row.created_at,
+            match: row.match_json,
+          }))
+        setHistory(normalizeHistoryItems(mapped))
+      } catch (error) {
+        console.error('Failed to load matches from Supabase', error)
+        const savedHistory = localStorage.getItem(HISTORY_KEY)
+        if (savedHistory) setHistory(normalizeHistoryItems(JSON.parse(savedHistory)))
+      }
+    }
+
+    loadRemoteHistory()
   }, [])
 
   useEffect(() => {
-    if (match) localStorage.setItem(STORAGE_KEY, JSON.stringify(match))
-    else localStorage.removeItem(STORAGE_KEY)
+    if (match) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(match))
+      upsertMatch(match).catch((error) => {
+        console.error('Failed to sync match to Supabase', error)
+      })
+    } else {
+      localStorage.removeItem(STORAGE_KEY)
+    }
   }, [match])
 
   useEffect(() => {
@@ -517,6 +543,10 @@ export default function App() {
       if (existing >= 0) normalized[existing] = payload
       else normalized.unshift(payload)
       return normalized.slice(0, 50)
+    })
+
+    upsertMatch(updated).catch((error) => {
+      console.error('Failed to persist finished match to Supabase', error)
     })
   }
 
