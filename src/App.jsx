@@ -409,7 +409,18 @@ function summarizeBallLong(ball) {
 }
 
 
+function isValidMatch(match) {
+  return Boolean(
+    match &&
+    Array.isArray(match.innings) &&
+    match.innings.length >= 2 &&
+    match.innings[0]?.battingTeamKey &&
+    match.innings[1]?.battingTeamKey
+  )
+}
+
 function matchResult(match) {
+  if (!isValidMatch(match)) return 'Invalid saved match'
   const first = computeState(clone(match), clone(match.innings[0])).summary
   const second = computeState(clone(match), clone(match.innings[1])).summary
   if (!match.completed && !match.innings[1].completed) return 'Match in progress'
@@ -438,15 +449,17 @@ function overGroups(innings) {
 }
 
 function normalizeHistoryItems(items) {
-  return (items || []).map((item, index) => {
-    if (item.match) return item
-    return {
-      id: item.id,
-      gameNumber: item.gameNumber || index + 1,
-      savedAt: item.savedAt || new Date().toISOString(),
-      match: item,
-    }
-  })
+  return (items || [])
+    .map((item, index) => {
+      if (item.match) return item
+      return {
+        id: item.id,
+        gameNumber: item.gameNumber || index + 1,
+        savedAt: item.savedAt || new Date().toISOString(),
+        match: item,
+      }
+    })
+    .filter(item => isValidMatch(item.match))
 }
 
 export default function App() {
@@ -481,7 +494,7 @@ export default function App() {
       try {
         const rows = await listMatches()
         const mapped = rows
-          .filter(row => row.match_json)
+          .filter(row => isValidMatch(row.match_json))
           .map((row, index) => ({
             id: row.app_match_id || row.id,
             gameNumber: index + 1,
@@ -552,6 +565,7 @@ export default function App() {
 
   function openSavedMatch(item) {
     const opened = clone(item.match || item)
+    if (!isValidMatch(opened)) return
     ensureInningsDefaults(opened, opened.inningsIndex)
     setMatch(opened)
   }
@@ -812,7 +826,7 @@ export default function App() {
                     <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
                   </summary>
                   <div className="history-grid">
-                    {savedMatch.innings.map((inn) => {
+                    {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
                       const savedState = computeState(clone(savedMatch), clone(inn))
                       return (
                         <div className="mini-card" key={inn.number}>
