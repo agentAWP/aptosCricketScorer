@@ -44,3 +44,7 @@ th,td{text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;vertical-align
 .runout-context div{border:1px solid #dbe5f1;border-radius:12px;padding:10px;background:#f8fafc;display:flex;flex-direction:column;gap:4px;min-width:0}
 .step-label{display:block;margin-bottom:6px;color:#334155;font-weight:700}
 @media (max-width:900px){.setup-grid,.main-grid,.grid-3,.stats-grid,.history-grid,.review-grid,.runout-context{grid-template-columns:1fr}.app-shell{padding:12px}.saved-item summary{align-items:flex-start;flex-direction:column}}
+
+.saved-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;line-height:1.35}
+.saved-date{font-weight:700;color:#0f172a}
+.saved-summary span:last-child{overflow-wrap:anywhere}

@@ -448,6 +448,13 @@ function overGroups(innings) {
   return groups
 }
 
+function formatMatchDate(value) {
+  if (!value) return "Date unavailable"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "Date unavailable"
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(date)
+}
+
 function normalizeHistoryItems(items) {
   return (items || [])
     .map((item, index) => {
@@ -819,10 +826,11 @@ export default function App() {
             <div className="saved-list">
               {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map(item => {
                 const savedMatch = item.match || item
+                const displayDate = formatMatchDate(item.savedAt || savedMatch.savedAt || savedMatch.updated_at || savedMatch.createdAt)
                 return (
                 <details className="saved-item history-item" key={item.id}>
                   <summary>
-                    <span>Game {item.gameNumber || '—'} · {matchResult(savedMatch)}</span>
+                    <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
                     <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
                   </summary>
                   <div className="history-grid">
