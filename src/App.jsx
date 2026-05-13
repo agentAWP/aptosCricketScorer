@@ -469,9 +469,265 @@ function normalizeHistoryItems(items) {
     .filter(item => isValidMatch(item.match))
 }
 
+function safeDivide(numerator, denominator, fallback = 0) {
+  return denominator ? numerator / denominator : fallback
+}
+
+function formatRate(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : '0.00'
+}
+
+function createPlayerBatting(name) {
+  return {
+    name,
+    innings: 0,
+    runs: 0,
+    balls: 0,
+    dismissals: 0,
+    notOuts: 0,
+    fours: 0,
+    sixes: 0,
+    singles: 0,
+    doubles: 0,
+  }
+}
+
+function createPlayerBowling(name) {
+  return {
+    name,
+    balls: 0,
+    runs: 0,
+    wickets: 0,
+    dots: 0,
+    caught: 0,
+    bowled: 0,
+  }
+}
+
+function createTeamAnalytics(name) {
+  return {
+    name,
+    matches: 0,
+    wins: 0,
+    losses: 0,
+    ties: 0,
+    runsFor: 0,
+    runsAgainst: 0,
+    wicketsLost: 0,
+    wicketsTaken: 0,
+    extras: 0,
+    boundaries: 0,
+  }
+}
+
+function bump(map, key, factory) {
+  if (!key) return null
+  if (!map.has(key)) map.set(key, factory(key))
+  return map.get(key)
+}
+
+function summarizeInningsAnalytics(match, innings) {
+  const state = computeState(clone(match), clone(innings))
+  let fours = 0
+  let sixes = 0
+  let singles = 0
+  let doubles = 0
+  let dots = 0
+  let wides = 0
+  let noBalls = 0
+  const wicketTypes = { bowled: 0, caught: 0, 'run out': 0, unknown: 0 }
+
+  innings.balls.forEach((ball) => {
+    const batRuns = ball.runsOffBat || 0
+    if (batRuns === 4) fours += 1
+    if (batRuns === 6) sixes += 1
+    if (batRuns === 1) singles += 1
+    if (batRuns === 2) doubles += 1
+    if (ball.legalBall && batRuns === 0 && (ball.extras || 0) === 0) dots += 1
+    if (ball.extraType === 'wide') wides += 1
+    if (ball.extraType === 'no-ball') noBalls += 1
+    if (ball.wicket) {
+      const type = ball.dismissalType || 'unknown'
+      wicketTypes[type] = (wicketTypes[type] || 0) + 1
+    }
+  })
+
+  const bowlingTeamKey = innings.battingTeamKey === 'team1' ? 'team2' : 'team1'
+  return {
+    innings,
+    state,
+    battingTeamKey: innings.battingTeamKey,
+    battingTeam: teamLabel(innings.battingTeamKey),
+    bowlingTeamKey,
+    bowlingTeam: teamLabel(bowlingTeamKey),
+    fours,
+    sixes,
+    singles,
+    doubles,
+    dots,
+    wides,
+    noBalls,
+    wicketTypes,
+    overs: overGroups(innings),
+  }
+}
+
+function analyzeMatches(historyItems, filters = {}) {
+  const selectedTeam = filters.team || 'all'
+  const selectedMatchId = filters.matchId || 'all'
+  const selectedPlayer = (filters.player || '').trim().toLowerCase()
+  const validItems = normalizeHistoryItems(historyItems)
+    .filter(item => item.match.completed || item.match.innings?.[1]?.completed)
+    .filter(item => selectedMatchId === 'all' || item.id === selectedMatchId)
+
+  const batting = new Map()
+  const bowling = new Map()
+  const teams = new Map()
+  const wicketTypes = { bowled: 0, caught: 0, 'run out': 0, unknown: 0 }
+  const matchBreakdowns = []
+  const totals = {
+    matches: validItems.length,
+    runs: 0,
+    wickets: 0,
+    legalBalls: 0,
+    extras: 0,
+    fours: 0,
+    sixes: 0,
+    singles: 0,
+    doubles: 0,
+    dots: 0,
+    catches: 0,
+    wides: 0,
+    noBalls: 0,
+  }
+
+  validItems.forEach((item) => {
+    const match = item.match
+    const inningsBreakdowns = match.innings.map(inn => summarizeInningsAnalytics(match, inn))
+    const first = inningsBreakdowns[0]?.state.summary
+    const second = inningsBreakdowns[1]?.state.summary
+    const teamKeys = ['team1', 'team2']
+    const teamScores = {
+      [match.innings[0].battingTeamKey]: first,
+      [match.innings[1].battingTeamKey]: second,
+    }
+
+    teamKeys.forEach((teamKey) => {
+      const team = bump(teams, teamLabel(teamKey), createTeamAnalytics)
+      team.matches += 1
+      const own = teamScores[teamKey]
+      const other = teamScores[teamKey === 'team1' ? 'team2' : 'team1']
+      team.runsFor += own?.totalRuns || 0
+      team.runsAgainst += other?.totalRuns || 0
+      team.wicketsLost += own?.wickets || 0
+      team.wicketsTaken += other?.wickets || 0
+    })
+
+    if (first && second) {
+      const firstTeam = teamLabel(match.innings[0].battingTeamKey)
+      const secondTeam = teamLabel(match.innings[1].battingTeamKey)
+      if (second.totalRuns >= first.totalRuns + 1) {
+        bump(teams, secondTeam, createTeamAnalytics).wins += 1
+        bump(teams, firstTeam, createTeamAnalytics).losses += 1
+      } else if (second.totalRuns < first.totalRuns) {
+        bump(teams, firstTeam, createTeamAnalytics).wins += 1
+        bump(teams, secondTeam, createTeamAnalytics).losses += 1
+      } else {
+        bump(teams, firstTeam, createTeamAnalytics).ties += 1
+        bump(teams, secondTeam, createTeamAnalytics).ties += 1
+      }
+    }
+
+    inningsBreakdowns.forEach((breakdown) => {
+      const includeBattingTeam = selectedTeam === 'all' || breakdown.battingTeamKey === selectedTeam
+      const includeBowlingTeam = selectedTeam === 'all' || breakdown.bowlingTeamKey === selectedTeam
+      const summary = breakdown.state.summary
+
+      if (includeBattingTeam) {
+        totals.runs += summary.totalRuns
+        totals.wickets += summary.wickets
+        totals.legalBalls += summary.legalBalls
+        totals.extras += summary.extras
+        totals.fours += breakdown.fours
+        totals.sixes += breakdown.sixes
+        totals.singles += breakdown.singles
+        totals.doubles += breakdown.doubles
+        totals.dots += breakdown.dots
+        totals.wides += breakdown.wides
+        totals.noBalls += breakdown.noBalls
+        Object.entries(breakdown.wicketTypes).forEach(([type, count]) => {
+          wicketTypes[type] = (wicketTypes[type] || 0) + count
+        })
+        const team = bump(teams, breakdown.battingTeam, createTeamAnalytics)
+        team.extras += summary.extras
+        team.boundaries += breakdown.fours + breakdown.sixes
+
+        breakdown.state.batting.forEach((player) => {
+          const row = bump(batting, player.name, createPlayerBatting)
+          row.innings += 1
+          row.runs += player.runs
+          row.balls += player.balls
+          if (player.status === 'not out') row.notOuts += 1
+          else row.dismissals += 1
+        })
+
+        breakdown.innings.balls.forEach((ball) => {
+          const row = bump(batting, ball.batter, createPlayerBatting)
+          if (!row) return
+          if ((ball.runsOffBat || 0) === 4) row.fours += 1
+          if ((ball.runsOffBat || 0) === 6) row.sixes += 1
+          if ((ball.runsOffBat || 0) === 1) row.singles += 1
+          if ((ball.runsOffBat || 0) === 2) row.doubles += 1
+          if (ball.wicket && ball.dismissalType === 'caught') totals.catches += 1
+        })
+      }
+
+      if (includeBowlingTeam) {
+        breakdown.state.bowling.forEach((player) => {
+          const row = bump(bowling, player.name, createPlayerBowling)
+          row.balls += player.balls
+          row.runs += player.runs
+          row.wickets += player.wickets
+        })
+        breakdown.innings.balls.forEach((ball) => {
+          const row = bump(bowling, ball.bowler, createPlayerBowling)
+          if (!row) return
+          if (ball.legalBall && (ball.runsOffBat || 0) === 0 && (ball.extras || 0) === 0) row.dots += 1
+          if (ball.wicket && ball.dismissalType === 'caught') row.caught += 1
+          if (ball.wicket && ball.dismissalType === 'bowled') row.bowled += 1
+        })
+      }
+    })
+
+    matchBreakdowns.push({
+      id: item.id,
+      gameNumber: item.gameNumber,
+      savedAt: item.savedAt || match.createdAt,
+      result: matchResult(match),
+      innings: inningsBreakdowns,
+    })
+  })
+
+  const playerMatchesFilter = row => !selectedPlayer || row.name.toLowerCase().includes(selectedPlayer)
+  const battingRows = [...batting.values()].filter(playerMatchesFilter)
+  const bowlingRows = [...bowling.values()].filter(playerMatchesFilter)
+  const teamRows = [...teams.values()].filter(row => selectedTeam === 'all' || row.name === teamLabel(selectedTeam))
+
+  return {
+    totals,
+    wicketTypes,
+    matches: validItems,
+    teamRows,
+    battingRows,
+    bowlingRows,
+    matchBreakdowns,
+  }
+}
+
 export default function App() {
   const [setup, setSetup] = useState({ team1: '', team2: '', sharedPlayer: '', overs: 5, firstBattingTeam: 'team1' })
   const [match, setMatch] = useState(null)
+  const [activeView, setActiveView] = useState('score')
   const [history, setHistory] = useState([])
   const [ballText, setBallText] = useState('')
   const [reviewOpen, setReviewOpen] = useState(false)
@@ -575,12 +831,14 @@ export default function App() {
     if (!isValidMatch(opened)) return
     ensureInningsDefaults(opened, opened.inningsIndex)
     setMatch(opened)
+    setActiveView('score')
   }
 
   function startMatch() {
     const created = createMatch(setup)
     ensureInningsDefaults(created, 0)
     setMatch(created)
+    setActiveView('score')
   }
 
   function pushBall(event) {
@@ -791,6 +1049,7 @@ export default function App() {
   function newMatch() {
     setMatch(null)
     setBallText('')
+    setActiveView('score')
   }
 
   const overs = innings ? overGroups(innings) : []
@@ -808,154 +1067,148 @@ export default function App() {
         </div>
       </header>
 
-      {!match ? (
-        <div className="setup-grid">
-          <section className="panel">
+      <nav className="view-tabs" aria-label="Primary views">
+        {[
+          ['score', 'Score'],
+          ['games', 'Games'],
+          ['analytics', 'Analytics'],
+        ].map(([id, label]) => (
+          <button key={id} className={activeView === id ? 'tab-button active' : 'tab-button'} onClick={() => setActiveView(id)}>{label}</button>
+        ))}
+      </nav>
+
+      {activeView === 'score' && (!match ? (
+        <main className="setup-view">
+          <section className="panel setup-panel">
+            <div className="panel-kicker">New match</div>
             <h2>Match Setup</h2>
-            <label>Team 1 players<textarea value={setup.team1} onChange={e => setSetup({ ...setup, team1: e.target.value })} /></label>
-            <label>Team 2 players<textarea value={setup.team2} onChange={e => setSetup({ ...setup, team2: e.target.value })} /></label>
-            <div className="grid-3">
+            <p className="muted">Enter players, choose the first batting side, and start scoring.</p>
+            <label>Team 1 players<textarea value={setup.team1} onChange={e => setSetup({ ...setup, team1: e.target.value })} placeholder="Jay, Sam, Nitish" /></label>
+            <label>Team 2 players<textarea value={setup.team2} onChange={e => setSetup({ ...setup, team2: e.target.value })} placeholder="Shubhan, Rahul, Aman" /></label>
+            <div className="grid-3 setup-controls">
               <label>Shared player<input value={setup.sharedPlayer} onChange={e => setSetup({ ...setup, sharedPlayer: e.target.value })} /></label>
               <label>Overs<input type="number" min="1" value={setup.overs} onChange={e => setSetup({ ...setup, overs: e.target.value })} /></label>
               <label>Bat first<select value={setup.firstBattingTeam} onChange={e => setSetup({ ...setup, firstBattingTeam: e.target.value })}><option value="team1">Team 1</option><option value="team2">Team 2</option></select></label>
             </div>
-            <button onClick={startMatch}>Start Match</button>
+            <button className="primary-action" onClick={startMatch}>Start Match</button>
           </section>
-          <section className="panel">
-            <h2>Completed Games</h2>
-            <div className="saved-list">
-              {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map(item => {
-                const savedMatch = item.match || item
-                const displayDate = formatMatchDate(item.savedAt || savedMatch.savedAt || savedMatch.updated_at || savedMatch.createdAt)
-                return (
-                <details className="saved-item history-item" key={item.id}>
-                  <summary>
-                    <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
-                    <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
-                  </summary>
-                  <div className="history-grid">
-                    {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
-                      const savedState = computeState(clone(savedMatch), clone(inn))
-                      return (
-                        <div className="mini-card" key={inn.number}>
-                          <h3>Innings {inn.number} · {teamLabel(inn.battingTeamKey)}</h3>
-                          <p className="muted small">Score: {savedState.summary.totalRuns}/{savedState.summary.wickets} in {savedState.summary.overs}</p>
-                          <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={savedState.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
-                          <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={savedState.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
-                          <div className="commentary-block">
-                            <div className="muted small">Commentary</div>
-                            {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
-                              <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </details>
-              )})}
+          <section className="panel glance-panel">
+            <div className="panel-kicker">At a glance</div>
+            <h2>Ready when you are</h2>
+            <div className="glance-list">
+              <div><strong>{history.length}</strong><span>saved games</span></div>
+              <div><strong>{normalizeHistoryItems(history).filter(item => item.match.completed || item.match.innings?.[1]?.completed).length}</strong><span>completed</span></div>
+              <div><strong>{setup.overs || 0}</strong><span>overs planned</span></div>
             </div>
+            <button className="secondary" onClick={() => setActiveView('games')}>Browse Games</button>
           </section>
-        </div>
+        </main>
       ) : (
-        <div className="main-grid">
-          <section className="panel large">
-            <div className="panel-head">
-              <h2>Live Match</h2>
-              <span className="badge">Innings {innings.number}</span>
-            </div>
-            <div className="stats-grid">
-              <Stat label="Batting" value={teamLabel(innings.battingTeamKey)} />
-              <Stat label="Score" value={`${state.summary.totalRuns}/${state.summary.wickets}`} />
-              <Stat label="Overs" value={state.summary.overs} />
-              <Stat label="Extras" value={String(state.summary.extras)} />
-            </div>
-            <div className="stats-grid">
-              <Stat label="Target" value={target || '—'} />
-              <Stat label="Runs Needed" value={target ? Math.max(target - state.summary.totalRuns, 0) : '—'} />
-              <Stat label="Balls Left" value={target ? Math.max(match.overs * BALLS_PER_OVER - state.summary.legalBalls, 0) : '—'} />
-              <Stat label="Req RR" value={target ? (((Math.max(target - state.summary.totalRuns, 0)) * BALLS_PER_OVER) / Math.max(match.overs * BALLS_PER_OVER - state.summary.legalBalls, 1)).toFixed(2) : '—'} />
+        <main className="score-layout">
+          <section className="score-main">
+            <div className="score-hero">
+              <div>
+                <div className="panel-kicker">{teamLabel(innings.battingTeamKey)} batting · Innings {innings.number}</div>
+                <div className="live-score">{state.summary.totalRuns}/{state.summary.wickets}</div>
+                <div className="muted">Overs {state.summary.overs} · Extras {state.summary.extras}</div>
+              </div>
+              <div className="score-equation">
+                <Stat label="Target" value={target || '—'} />
+                <Stat label="Need" value={target ? Math.max(target - state.summary.totalRuns, 0) : '—'} />
+                <Stat label="Balls" value={target ? Math.max(match.overs * BALLS_PER_OVER - state.summary.legalBalls, 0) : '—'} />
+                <Stat label="Req RR" value={target ? (((Math.max(target - state.summary.totalRuns, 0)) * BALLS_PER_OVER) / Math.max(match.overs * BALLS_PER_OVER - state.summary.legalBalls, 1)).toFixed(2) : '—'} />
+              </div>
             </div>
 
-            <div className="override-box">
-              <h3>Manual override</h3>
-              <div className="grid-3">
+            <div className="player-strip">
+              <PlayerChip label="Striker" value={state.summary.striker || innings.striker || '—'} active />
+              <PlayerChip label="Non-striker" value={state.summary.nonStriker || innings.nonStriker || '—'} />
+              <PlayerChip label="Bowler" value={state.summary.currentBowler || innings.currentBowler || '—'} />
+            </div>
+
+            <section className="scoring-card">
+              <div className="panel-head compact-head"><h2>Score Ball</h2><span className="badge">Quick entry</span></div>
+              <QuickGroup title="Runs" items={[
+                ['Dot', 'Dot by ' + (state.summary.striker || 'striker')],
+                ['1', 'Single by ' + (state.summary.striker || 'striker')],
+                ['2', 'Double by ' + (state.summary.striker || 'striker')],
+                ['3', 'Three by ' + (state.summary.striker || 'striker')],
+                ['4', (state.summary.striker || 'striker') + ' to the boundary for four runs'],
+                ['6', (state.summary.striker || 'striker') + ' hits six'],
+              ]} onPick={setBallText} />
+              <QuickGroup title="Extras" items={[
+                ['Wide', 'Wide'],
+              ]} onPick={setBallText} extraAction={<button className="secondary quick-button" onClick={() => {
+                setReviewEvent({ raw: 'No ball', bowler: state.summary.currentBowler, batter: state.summary.striker, extraType: 'no-ball', extras: 0, wicket: false, dismissalType: '', dismissalPlayer: '', legalBall: false, runsOffBat: 0 })
+                setNoBallBatter(state.summary.striker || '')
+                setNoBallRuns('0')
+                setNoBallOpen(true)
+              }}>No Ball</button>} />
+              <QuickGroup title="Wickets" items={[
+                ['Bowled', (state.summary.striker || 'striker') + ' bowled'],
+                ['Caught Behind', (state.summary.striker || 'striker') + ' caught behind'],
+                ['Caught', (state.summary.striker || 'striker') + ' caught'],
+                ['Run Out', (state.summary.striker || 'striker') + ' run out'],
+              ]} onPick={setBallText} />
+
+              <label className="ball-entry-label">Ball description<textarea value={ballText} onChange={e => setBallText(e.target.value)} placeholder="Type natural commentary here..." /></label>
+              <div className="actions-row score-actions">
+                <button className="primary-action" onClick={saveBall}>Save Ball</button>
+                <button className="secondary" onClick={undo}>Undo</button>
+                <button className="secondary" onClick={endInnings}>End Innings</button>
+              </div>
+            </section>
+
+            <details className="adjust-panel">
+              <summary>Adjust current players</summary>
+              <div className="grid-3 adjust-grid">
                 <label>Striker<select value={override.striker} onChange={e => setOverride({ ...override, striker: e.target.value })}>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
                 <label>Non-striker<select value={override.nonStriker} onChange={e => setOverride({ ...override, nonStriker: e.target.value })}>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
                 <label>Bowler<select value={override.bowler} onChange={e => setOverride({ ...override, bowler: e.target.value })}>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
               </div>
               <button className="secondary" onClick={overridePlayers}>Override current players</button>
-            </div>
+            </details>
 
-            <div className="quick-actions">
-              {[
-                ['Dot', `Dot by ${state.summary.striker || 'striker'}`],
-                ['1', `Single by ${state.summary.striker || 'striker'}`],
-                ['2', `Double by ${state.summary.striker || 'striker'}`],
-                ['3', `Three by ${state.summary.striker || 'striker'}`],
-                ['4', `${state.summary.striker || 'striker'} to the boundary for four runs`],
-                ['6', `${state.summary.striker || 'striker'} hits six`],
-                ['Wide', 'Wide'],
-                ['Bowled', `${state.summary.striker || 'striker'} bowled`],
-                ['Caught Behind', `${state.summary.striker || 'striker'} caught behind`],
-                ['Caught', `${state.summary.striker || 'striker'} caught`],
-                ['Run Out', `${state.summary.striker || 'striker'} run out`],
-              ].map(([label, value]) => <button key={label} className="secondary" onClick={() => setBallText(value)}>{label}</button>)}
-              <button className="secondary" onClick={() => {
-                setReviewEvent({ raw: 'No ball', bowler: state.summary.currentBowler, batter: state.summary.striker, extraType: 'no-ball', extras: 0, wicket: false, dismissalType: '', dismissalPlayer: '', legalBall: false, runsOffBat: 0 })
-                setNoBallBatter(state.summary.striker || '')
-                setNoBallRuns('0')
-                setNoBallOpen(true)
-              }}>No Ball</button>
-            </div>
-
-            <label>Ball description<textarea value={ballText} onChange={e => setBallText(e.target.value)} placeholder="Type natural commentary here..." /></label>
-            <div className="actions-row">
-              <button onClick={saveBall}>Save Ball</button>
-              <button className="secondary" onClick={undo}>Undo</button>
-              <button className="secondary" onClick={endInnings}>End Innings</button>
-            </div>
-
-            <h3>Ball Log</h3>
-            <div className="ball-log">
-              {overs.length === 0 ? <p className="muted">No balls yet.</p> : overs.map((over, overIndex) => (
-                <details key={over.over} open={overIndex === overs.length - 1} className="over-card">
-                  <summary>Over {over.over} · {over.totalRuns} runs</summary>
-                  {over.balls.map((ball) => {
-                    const index = innings.balls.findIndex(x => x.id === ball.id)
-                    return <div className="ball-item" key={ball.id}>
-                      <strong>{legalBallLabel(index, innings)}</strong> · {ball.raw}
-                      <div className="muted small">{ball.batter} · {ball.runsOffBat} bat · {ball.extras} extras {ball.wicket ? `· ${ball.dismissalType}` : ''}</div>
-                      <button className="secondary small-button" onClick={() => openEdit(match.inningsIndex, index)}>Edit</button>
-                    </div>
-                  })}
-                </details>
-              ))}
-            </div>
+            <section className="panel log-panel">
+              <div className="panel-head compact-head"><h2>Ball Log</h2><span className="badge">{innings.balls.length} entries</span></div>
+              <div className="ball-log">
+                {overs.length === 0 ? <p className="muted">No balls yet.</p> : overs.map((over, overIndex) => (
+                  <details key={over.over} open={overIndex === overs.length - 1} className="over-card">
+                    <summary>Over {over.over} · {over.totalRuns} runs</summary>
+                    {over.balls.map((ball) => {
+                      const index = innings.balls.findIndex(x => x.id === ball.id)
+                      return <div className="ball-item" key={ball.id}>
+                        <strong>{legalBallLabel(index, innings)}</strong> · {ball.raw}
+                        <div className="muted small">{ball.batter} · {ball.runsOffBat} bat · {ball.extras} extras {ball.wicket ? '· ' + ball.dismissalType : ''}</div>
+                        <button className="secondary small-button" onClick={() => openEdit(match.inningsIndex, index)}>Edit</button>
+                      </div>
+                    })}
+                  </details>
+                ))}
+              </div>
+            </section>
           </section>
 
-          <section className="panel">
-            <h2>Scorecard</h2>
-            <div className="score-block">
-              <h3>Batting</h3>
-              <table><thead><tr><th>Player</th><th>R</th><th>B</th><th>Status</th></tr></thead><tbody>{state.batting.map(p => <tr key={p.name}><td>{p.name}</td><td>{p.runs}</td><td>{p.balls}</td><td>{p.status}</td></tr>)}</tbody></table>
-            </div>
-            <div className="score-block">
-              <h3>Bowling</h3>
-              <table><thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th></tr></thead><tbody>{state.bowling.map(p => <tr key={p.name}><td>{p.name}</td><td>{oversFromBalls(p.balls)}</td><td>{p.runs}</td><td>{p.wickets}</td></tr>)}</tbody></table>
-            </div>
-            <div className="score-block">
-              <h3>Result</h3>
-              <p>{matchResult(match)}</p>
-            </div>
-            <div className="score-block">
-              <h3>Ball-by-ball commentary</h3>
+          <aside className="score-side">
+            <section className="panel scorecard-panel">
+              <div className="panel-head compact-head"><h2>Scorecard</h2><span className="badge">Live</span></div>
+              <div className="score-block">
+                <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={state.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
+              </div>
+              <div className="score-block">
+                <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={state.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
+              </div>
+              <div className="score-block result-block"><h3>Result</h3><p>{matchResult(match)}</p></div>
+            </section>
+
+            <section className="panel commentary-panel">
+              <h2>Commentary</h2>
               {match.innings.filter(inn => inn.completed || inn.balls.length > 0).map((inn) => {
                 const inningsIndex = inn.number - 1
                 const innState = computeState(clone(match), clone(inn))
                 return (
                   <details key={inn.number} className="over-card">
-                    <summary>Innings {inn.number} ({teamLabel(inn.battingTeamKey)} batting) · {innState.summary.totalRuns}/{innState.summary.wickets}</summary>
+                    <summary>Innings {inn.number} ({teamLabel(inn.battingTeamKey)}) · {innState.summary.totalRuns}/{innState.summary.wickets}</summary>
                     {inn.balls.length === 0 ? <p className="muted small">No commentary recorded.</p> : inn.balls.map((ball, ballIndex) => (
                       <div className="ball-item" key={ball.id}>
                         <strong>{legalBallLabel(ballIndex, inn)}</strong> · {ball.raw}
@@ -966,10 +1219,13 @@ export default function App() {
                   </details>
                 )
               })}
-            </div>
-          </section>
-        </div>
-      )}
+            </section>
+          </aside>
+        </main>
+      ))}
+
+      {activeView === 'games' && <GamesPanel history={history} openSavedMatch={openSavedMatch} />}
+      {activeView === 'analytics' && <AnalyticsPanel history={history} />}
 
       {reviewOpen && reviewEvent && (
         <div className="dialog-backdrop"><div className={`dialog ${reviewEvent.dismissalType === 'run out' ? 'wide-dialog' : ''}`}>
@@ -1052,6 +1308,167 @@ export default function App() {
         </div></div>
       )}
     </div>
+  )
+}
+
+
+
+function GamesPanel({ history, openSavedMatch }) {
+  return (
+    <main className="view-stack">
+      <section className="panel games-panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-kicker">Archive</div>
+            <h2>Completed Games</h2>
+          </div>
+          <span className="badge">{history.length} saved</span>
+        </div>
+        <div className="saved-list">
+          {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map(item => {
+            const savedMatch = item.match || item
+            const displayDate = formatMatchDate(item.savedAt || savedMatch.savedAt || savedMatch.updated_at || savedMatch.createdAt)
+            return (
+              <details className="saved-item history-item" key={item.id}>
+                <summary>
+                  <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
+                  <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
+                </summary>
+                <div className="history-grid">
+                  {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
+                    const savedState = computeState(clone(savedMatch), clone(inn))
+                    return (
+                      <div className="mini-card" key={inn.number}>
+                        <h3>Innings {inn.number} · {teamLabel(inn.battingTeamKey)}</h3>
+                        <p className="muted small">Score: {savedState.summary.totalRuns}/{savedState.summary.wickets} in {savedState.summary.overs}</p>
+                        <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={savedState.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
+                        <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={savedState.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
+                        <div className="commentary-block">
+                          <div className="muted small">Commentary</div>
+                          {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
+                            <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </details>
+            )
+          })}
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function PlayerChip({ label, value, active = false }) {
+  return <div className={active ? 'player-chip active' : 'player-chip'}><span>{label}</span><strong>{value}</strong></div>
+}
+
+function QuickGroup({ title, items, onPick, extraAction = null }) {
+  return (
+    <div className="quick-group">
+      <div className="quick-title">{title}</div>
+      <div className="quick-buttons">
+        {items.map(([label, value]) => <button key={label} className="secondary quick-button" onClick={() => onPick(value)}>{label}</button>)}
+        {extraAction}
+      </div>
+    </div>
+  )
+}
+
+function AnalyticsPanel({ history }) {
+  const completedItems = useMemo(() => normalizeHistoryItems(history).filter(item => item.match.completed || item.match.innings?.[1]?.completed), [history])
+  const [selectedMatchId, setSelectedMatchId] = useState('all')
+  const [selectedTeam, setSelectedTeam] = useState('all')
+  const [playerFilter, setPlayerFilter] = useState('')
+  const analytics = useMemo(() => analyzeMatches(completedItems, { matchId: selectedMatchId, team: selectedTeam, player: playerFilter }), [completedItems, selectedMatchId, selectedTeam, playerFilter])
+  const totals = analytics.totals
+  const battingLeaders = [...analytics.battingRows].sort((a, b) => b.runs - a.runs).slice(0, 8)
+  const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
+  const bowlingLeaders = [...analytics.bowlingRows].sort((a, b) => b.wickets - a.wickets || safeDivide(a.runs, a.balls / BALLS_PER_OVER, 999) - safeDivide(b.runs, b.balls / BALLS_PER_OVER, 999)).slice(0, 8)
+  const economyLeaders = [...analytics.bowlingRows].filter(p => p.balls >= BALLS_PER_OVER).sort((a, b) => safeDivide(a.runs, a.balls / BALLS_PER_OVER) - safeDivide(b.runs, b.balls / BALLS_PER_OVER)).slice(0, 8)
+  const maxOverRuns = Math.max(1, ...analytics.matchBreakdowns.flatMap(match => match.innings.flatMap(inn => inn.overs.map(over => over.totalRuns))))
+
+  useEffect(() => {
+    if (selectedMatchId !== 'all' && !completedItems.some(item => item.id === selectedMatchId)) setSelectedMatchId('all')
+  }, [completedItems, selectedMatchId])
+
+  return (
+    <section className="panel analytics-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Analytics</h2>
+          <p className="muted small">Read-only stats from completed saved games.</p>
+        </div>
+        <span className="badge">{completedItems.length} completed</span>
+      </div>
+
+      {completedItems.length === 0 ? (
+        <p className="muted">No completed matches yet. Finish a match and it will appear here automatically.</p>
+      ) : (
+        <>
+          <div className="analytics-filters">
+            <label>Match<select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)}>
+              <option value="all">All completed matches</option>
+              {completedItems.map(item => <option key={item.id} value={item.id}>{formatMatchDate(item.savedAt || item.match.createdAt)} · Game {item.gameNumber || '—'}</option>)}
+            </select></label>
+            <label>Team<select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)}>
+              <option value="all">Both teams</option>
+              <option value="team1">Team 1</option>
+              <option value="team2">Team 2</option>
+            </select></label>
+            <label>Player filter<input value={playerFilter} onChange={e => setPlayerFilter(e.target.value)} placeholder="Search player" /></label>
+          </div>
+
+          <div className="stats-grid analytics-stats">
+            <Stat label="Runs" value={totals.runs} />
+            <Stat label="Wickets" value={totals.wickets} />
+            <Stat label="Run Rate" value={formatRate(safeDivide(totals.runs, totals.legalBalls / BALLS_PER_OVER))} />
+            <Stat label="Extras" value={totals.extras} />
+            <Stat label="4s / 6s" value={`${totals.fours} / ${totals.sixes}`} />
+            <Stat label="Singles / Doubles" value={`${totals.singles} / ${totals.doubles}`} />
+            <Stat label="Dots" value={totals.dots} />
+            <Stat label="Caught Outs" value={totals.catches} />
+          </div>
+
+          <div className="analytics-grid">
+            <ScoreTable title="Team Results" headers={['Team', 'M', 'W', 'L', 'T', 'Runs', 'Wkts', 'Boundaries']} rows={analytics.teamRows.map(team => [team.name, team.matches, team.wins, team.losses, team.ties, `${team.runsFor}/${team.runsAgainst}`, `${team.wicketsTaken}/${team.wicketsLost}`, team.boundaries])} />
+            <ScoreTable title="Top Run Scorers" headers={['Player', 'Inn', 'R', 'B', 'SR', '4s', '6s']} rows={battingLeaders.map(p => [p.name, p.innings, p.runs, p.balls, formatRate(safeDivide(p.runs * 100, p.balls)), p.fours, p.sixes])} />
+            <ScoreTable title="Strike Rate" headers={['Player', 'R', 'B', 'SR', '1s', '2s', 'NO']} rows={strikeLeaders.map(p => [p.name, p.runs, p.balls, formatRate(safeDivide(p.runs * 100, p.balls)), p.singles, p.doubles, p.notOuts])} />
+            <ScoreTable title="Bowling Wickets" headers={['Bowler', 'O', 'R', 'W', 'Econ', 'Dots']} rows={bowlingLeaders.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets, formatRate(safeDivide(p.runs, p.balls / BALLS_PER_OVER)), p.dots])} />
+            <ScoreTable title="Economy" headers={['Bowler', 'O', 'R', 'W', 'Econ', 'C/B']} rows={economyLeaders.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets, formatRate(safeDivide(p.runs, p.balls / BALLS_PER_OVER)), `${p.caught}/${p.bowled}`])} />
+            <ScoreTable title="Wicket Types" headers={['Type', 'Count']} rows={Object.entries(analytics.wicketTypes).map(([type, count]) => [type, count])} />
+          </div>
+
+          <div className="match-analytics-list">
+            {analytics.matchBreakdowns.length === 0 ? <p className="muted">No analytics match the current filters.</p> : analytics.matchBreakdowns.map(match => (
+              <details className="analytics-match" key={match.id}>
+                <summary><strong>{formatMatchDate(match.savedAt)} · Game {match.gameNumber || '—'}</strong><span>{match.result}</span></summary>
+                <div className="innings-bars">
+                  {match.innings.map(inn => (
+                    <div className="mini-card" key={inn.innings.number}>
+                      <h3>Innings {inn.innings.number} · {inn.battingTeam}</h3>
+                      <p className="muted small">{inn.state.summary.totalRuns}/{inn.state.summary.wickets} in {inn.state.summary.overs} · RR {formatRate(safeDivide(inn.state.summary.totalRuns, inn.state.summary.legalBalls / BALLS_PER_OVER))} · Extras {inn.state.summary.extras}</p>
+                      <div className="bar-list">
+                        {inn.overs.length === 0 ? <p className="muted small">No overs recorded.</p> : inn.overs.map(over => (
+                          <div className="over-bar-row" key={over.over}>
+                            <span>Over {over.over}</span>
+                            <div className="over-bar-track"><div className="over-bar-fill" style={{ width: `${Math.max(6, (over.totalRuns / maxOverRuns) * 100)}%` }} /></div>
+                            <strong>{over.totalRuns}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   )
 }
 
