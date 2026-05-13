@@ -1059,7 +1059,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1>Cricket Match Scorer</h1>
-          <p>React + Vite starter with guided scoring and Netlify-ready build.</p>
+          <p>Fast scoring, saved games, and cricket analytics in one local-first app.</p>
         </div>
         <div className="actions-row">
           <button className="secondary" onClick={() => setRenameOpen(true)} disabled={!match}>Rename Player</button>
