@@ -724,11 +724,67 @@ function analyzeMatches(historyItems, filters = {}) {
   }
 }
 
+function matchHighlights(match) {
+  if (!isValidMatch(match)) return null
+  const innings = match.innings.map(inn => summarizeInningsAnalytics(match, inn))
+  const battingRows = innings.flatMap(inn => inn.state.batting.map(player => ({ ...player, team: inn.battingTeam })))
+  const bowlingRows = innings.flatMap(inn => inn.state.bowling.map(player => ({ ...player, team: inn.bowlingTeam })))
+  const topScorer = battingRows.sort((a, b) => b.runs - a.runs || b.balls - a.balls)[0] || null
+  const bestBowler = bowlingRows.sort((a, b) => b.wickets - a.wickets || a.runs - b.runs || b.balls - a.balls)[0] || null
+  const totals = innings.reduce((acc, inn) => {
+    acc.runs += inn.state.summary.totalRuns
+    acc.extras += inn.state.summary.extras
+    acc.fours += inn.fours
+    acc.sixes += inn.sixes
+    acc.dots += inn.dots
+    acc.legalBalls += inn.state.summary.legalBalls
+    Object.entries(inn.wicketTypes).forEach(([type, count]) => {
+      acc.wicketTypes[type] = (acc.wicketTypes[type] || 0) + count
+    })
+    return acc
+  }, { runs: 0, extras: 0, fours: 0, sixes: 0, dots: 0, legalBalls: 0, wicketTypes: { bowled: 0, caught: 0, 'run out': 0, unknown: 0 } })
+  return { result: matchResult(match), innings, topScorer, bestBowler, totals }
+}
+
+function formatScoreLine(highlight) {
+  return highlight.innings.map(inn => inn.battingTeam + ': ' + inn.state.summary.totalRuns + '/' + inn.state.summary.wickets + ' in ' + inn.state.summary.overs).join(' | ')
+}
+
+function buildMatchSummaryText(match, label = 'Cricket Match') {
+  const highlight = matchHighlights(match)
+  if (!highlight) return label + '\nNo valid match data.'
+  const wicketText = Object.entries(highlight.totals.wicketTypes).filter(([, count]) => count > 0).map(([type, count]) => type + ': ' + count).join(', ') || 'None'
+  const lines = [
+    label,
+    highlight.result,
+    formatScoreLine(highlight),
+    'Top scorer: ' + (highlight.topScorer ? highlight.topScorer.name + ' ' + highlight.topScorer.runs + ' (' + highlight.topScorer.balls + ')' : 'None'),
+    'Best bowler: ' + (highlight.bestBowler ? highlight.bestBowler.name + ' ' + oversFromBalls(highlight.bestBowler.balls) + '-' + highlight.bestBowler.runs + '-' + highlight.bestBowler.wickets : 'None'),
+    'Extras: ' + highlight.totals.extras,
+    'Boundaries: ' + highlight.totals.fours + ' fours, ' + highlight.totals.sixes + ' sixes',
+    'Wickets: ' + wicketText,
+  ]
+  return lines.join('\n')
+}
+
+function playerDirectory(match) {
+  if (!match) return []
+  const rows = []
+  const addRows = (players, team, source) => players.forEach(name => rows.push({ name, team, source }))
+  addRows(match.team1Players || [], 'Team 1', 'Roster')
+  addRows(match.team2Players || [], 'Team 2', 'Roster')
+  if (match.sharedPlayer) rows.push({ name: match.sharedPlayer, team: 'Both', source: 'Shared' })
+  addRows(match.dynamicPlayers || [], 'Dynamic', 'Mid-game')
+  return rows.filter((row, index, all) => row.name && all.findIndex(item => item.name === row.name && item.team === row.team) === index)
+}
+
+
 export default function App() {
   const [setup, setSetup] = useState({ team1: '', team2: '', sharedPlayer: '', overs: 5, firstBattingTeam: 'team1' })
   const [match, setMatch] = useState(null)
   const [activeView, setActiveView] = useState('score')
   const [history, setHistory] = useState([])
+  const [syncStatus, setSyncStatus] = useState('local')
   const [ballText, setBallText] = useState('')
   const [reviewOpen, setReviewOpen] = useState(false)
   const [reviewEvent, setReviewEvent] = useState(null)
@@ -778,11 +834,16 @@ export default function App() {
   useEffect(() => {
     if (match) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(match))
-      upsertMatch(match).catch((error) => {
-        console.error('Failed to sync match to Supabase', error)
-      })
+      setSyncStatus('syncing')
+      upsertMatch(match)
+        .then(() => setSyncStatus('synced'))
+        .catch((error) => {
+          console.error('Failed to sync match to Supabase', error)
+          setSyncStatus('failed')
+        })
     } else {
       localStorage.removeItem(STORAGE_KEY)
+      setSyncStatus('local')
     }
   }, [match])
 
@@ -821,9 +882,13 @@ export default function App() {
       return normalized.slice(0, 50)
     })
 
-    upsertMatch(updated).catch((error) => {
-      console.error('Failed to persist finished match to Supabase', error)
-    })
+    setSyncStatus('syncing')
+    upsertMatch(updated)
+      .then(() => setSyncStatus('synced'))
+      .catch((error) => {
+        console.error('Failed to persist finished match to Supabase', error)
+        setSyncStatus('failed')
+      })
   }
 
   function openSavedMatch(item) {
@@ -926,6 +991,12 @@ export default function App() {
     setMatch(updated)
     setBowlerPromptOpen(false)
     setNextBowler('')
+  }
+
+  function startRename(name = '') {
+    setRenameFrom(name)
+    setRenameTo('')
+    setRenameOpen(true)
   }
 
   function renamePlayer() {
@@ -1062,7 +1133,8 @@ export default function App() {
           <p>Fast scoring, saved games, and cricket analytics in one local-first app.</p>
         </div>
         <div className="actions-row">
-          <button className="secondary" onClick={() => setRenameOpen(true)} disabled={!match}>Rename Player</button>
+          <button className="secondary" onClick={() => startRename()} disabled={!match}>Rename Player</button>
+          <SyncBadge status={syncStatus} />
           <button className="secondary" onClick={newMatch}>New Match</button>
         </div>
       </header>
@@ -1190,6 +1262,7 @@ export default function App() {
           </section>
 
           <aside className="score-side">
+            {match.completed && <MatchSummaryCard match={match} title="Completed Match" />}
             <section className="panel scorecard-panel">
               <div className="panel-head compact-head"><h2>Scorecard</h2><span className="badge">Live</span></div>
               <div className="score-block">
@@ -1220,6 +1293,8 @@ export default function App() {
                 )
               })}
             </section>
+
+            <PlayerManagement match={match} onRename={startRename} />
           </aside>
         </main>
       ))}
@@ -1313,6 +1388,78 @@ export default function App() {
 
 
 
+
+function SyncBadge({ status }) {
+  const labels = { local: 'Local', syncing: 'Syncing', synced: 'Synced', failed: 'Sync failed' }
+  return <span className={'sync-badge ' + status}>{labels[status] || 'Local'}</span>
+}
+
+function CopySummaryButton({ match, label = 'Copy Summary', summaryLabel = 'Cricket Match' }) {
+  const [copied, setCopied] = useState(false)
+  async function copySummary() {
+    const text = buildMatchSummaryText(match, summaryLabel)
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
+      else window.prompt('Copy match summary', text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch (error) {
+      window.prompt('Copy match summary', text)
+    }
+  }
+  return <button className="secondary small-button" onClick={copySummary}>{copied ? 'Copied' : label}</button>
+}
+
+function MatchSummaryCard({ match, title = 'Match Summary', compact = false }) {
+  const highlight = matchHighlights(match)
+  if (!highlight) return null
+  const wicketRows = Object.entries(highlight.totals.wicketTypes).filter(([, count]) => count > 0)
+  return (
+    <section className={compact ? 'summary-card compact-summary' : 'summary-card'}>
+      <div className="panel-head compact-head">
+        <div>
+          <div className="panel-kicker">Result</div>
+          <h2>{title}</h2>
+        </div>
+        <CopySummaryButton match={match} summaryLabel={title} />
+      </div>
+      <p className="result-line">{highlight.result}</p>
+      <div className="summary-scoreline">{formatScoreLine(highlight)}</div>
+      <div className="summary-grid">
+        <Stat label="Top Scorer" value={highlight.topScorer ? highlight.topScorer.name + ' ' + highlight.topScorer.runs : '—'} />
+        <Stat label="Best Bowler" value={highlight.bestBowler ? highlight.bestBowler.name + ' ' + highlight.bestBowler.wickets + 'w' : '—'} />
+        <Stat label="Extras" value={highlight.totals.extras} />
+        <Stat label="4s / 6s" value={highlight.totals.fours + ' / ' + highlight.totals.sixes} />
+      </div>
+      <div className="wicket-pills">
+        {wicketRows.length === 0 ? <span>No wickets</span> : wicketRows.map(([type, count]) => <span key={type}>{type}: {count}</span>)}
+      </div>
+    </section>
+  )
+}
+
+function PlayerManagement({ match, onRename }) {
+  const rows = playerDirectory(match)
+  return (
+    <section className="panel player-panel">
+      <div className="panel-head compact-head"><h2>Players</h2><span className="badge">{rows.length} names</span></div>
+      {rows.length === 0 ? <p className="muted">No players yet.</p> : (
+        <div className="player-table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Team</th><th>Type</th><th></th></tr></thead>
+            <tbody>{rows.map(row => (
+              <tr key={row.team + '-' + row.name}>
+                <td>{row.name}</td><td>{row.team}</td><td>{row.source}</td>
+                <td><button className="secondary small-button" onClick={() => onRename(row.name)}>Rename</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function GamesPanel({ history, openSavedMatch }) {
   return (
     <main className="view-stack">
@@ -1334,6 +1481,7 @@ function GamesPanel({ history, openSavedMatch }) {
                   <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
                   <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
                 </summary>
+                <MatchSummaryCard match={savedMatch} title={'Game ' + (item.gameNumber || '—')} compact />
                 <div className="history-grid">
                   {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
                     const savedState = computeState(clone(savedMatch), clone(inn))
@@ -1389,6 +1537,9 @@ function AnalyticsPanel({ history }) {
   const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
   const bowlingLeaders = [...analytics.bowlingRows].sort((a, b) => b.wickets - a.wickets || safeDivide(a.runs, a.balls / BALLS_PER_OVER, 999) - safeDivide(b.runs, b.balls / BALLS_PER_OVER, 999)).slice(0, 8)
   const economyLeaders = [...analytics.bowlingRows].filter(p => p.balls >= BALLS_PER_OVER).sort((a, b) => safeDivide(a.runs, a.balls / BALLS_PER_OVER) - safeDivide(b.runs, b.balls / BALLS_PER_OVER)).slice(0, 8)
+  const selectedBattingPlayer = playerFilter ? analytics.battingRows.find(p => p.name.toLowerCase() === playerFilter.trim().toLowerCase()) || analytics.battingRows[0] : null
+  const selectedBowlingPlayer = selectedBattingPlayer ? analytics.bowlingRows.find(p => p.name === selectedBattingPlayer.name) : null
+  const recentMatches = analytics.matchBreakdowns.slice(0, 5)
   const maxOverRuns = Math.max(1, ...analytics.matchBreakdowns.flatMap(match => match.innings.flatMap(inn => inn.overs.map(over => over.totalRuns))))
 
   useEffect(() => {
@@ -1431,7 +1582,33 @@ function AnalyticsPanel({ history }) {
             <Stat label="Singles / Doubles" value={`${totals.singles} / ${totals.doubles}`} />
             <Stat label="Dots" value={totals.dots} />
             <Stat label="Caught Outs" value={totals.catches} />
+            <Stat label="Dot %" value={formatRate(safeDivide(totals.dots * 100, totals.legalBalls))} />
+            <Stat label="Boundary %" value={formatRate(safeDivide((totals.fours + totals.sixes) * 100, totals.legalBalls))} />
+            <Stat label="Wides / No Balls" value={totals.wides + ' / ' + totals.noBalls} />
+            <Stat label="Matches" value={totals.matches} />
           </div>
+
+          <div className="team-card-grid">
+            {analytics.teamRows.map(team => (
+              <div className="team-card" key={team.name}>
+                <div className="panel-kicker">{team.name}</div>
+                <strong>{team.wins}-{team.losses}{team.ties ? '-' + team.ties : ''}</strong>
+                <span>Avg score {formatRate(safeDivide(team.runsFor, team.matches))} · Boundaries {team.boundaries}</span>
+              </div>
+            ))}
+          </div>
+
+          {selectedBattingPlayer && (
+            <section className="player-drilldown">
+              <div className="panel-head compact-head"><h3>{selectedBattingPlayer.name}</h3><span className="badge">Player detail</span></div>
+              <div className="stats-grid analytics-stats">
+                <Stat label="Bat Runs" value={selectedBattingPlayer.runs} />
+                <Stat label="Strike Rate" value={formatRate(safeDivide(selectedBattingPlayer.runs * 100, selectedBattingPlayer.balls))} />
+                <Stat label="Boundaries" value={(selectedBattingPlayer.fours || 0) + (selectedBattingPlayer.sixes || 0)} />
+                <Stat label="Bowl Econ" value={selectedBowlingPlayer ? formatRate(safeDivide(selectedBowlingPlayer.runs, selectedBowlingPlayer.balls / BALLS_PER_OVER)) : '—'} />
+              </div>
+            </section>
+          )}
 
           <div className="analytics-grid">
             <ScoreTable title="Team Results" headers={['Team', 'M', 'W', 'L', 'T', 'Runs', 'Wkts', 'Boundaries']} rows={analytics.teamRows.map(team => [team.name, team.matches, team.wins, team.losses, team.ties, `${team.runsFor}/${team.runsAgainst}`, `${team.wicketsTaken}/${team.wicketsLost}`, team.boundaries])} />
@@ -1441,6 +1618,13 @@ function AnalyticsPanel({ history }) {
             <ScoreTable title="Economy" headers={['Bowler', 'O', 'R', 'W', 'Econ', 'C/B']} rows={economyLeaders.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets, formatRate(safeDivide(p.runs, p.balls / BALLS_PER_OVER)), `${p.caught}/${p.bowled}`])} />
             <ScoreTable title="Wicket Types" headers={['Type', 'Count']} rows={Object.entries(analytics.wicketTypes).map(([type, count]) => [type, count])} />
           </div>
+
+          <section className="recent-form">
+            <div className="panel-head compact-head"><h3>Recent Form</h3><span className="badge">Last {recentMatches.length}</span></div>
+            {recentMatches.length === 0 ? <p className="muted">No recent matches for these filters.</p> : recentMatches.map(match => (
+              <div className="recent-row" key={match.id}><strong>Game {match.gameNumber || '—'}</strong><span>{match.result}</span></div>
+            ))}
+          </section>
 
           <div className="match-analytics-list">
             {analytics.matchBreakdowns.length === 0 ? <p className="muted">No analytics match the current filters.</p> : analytics.matchBreakdowns.map(match => (
