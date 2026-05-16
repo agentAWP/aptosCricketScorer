@@ -778,6 +778,38 @@ function playerDirectory(match) {
   return rows.filter((row, index, all) => row.name && all.findIndex(item => item.name === row.name && item.team === row.team) === index)
 }
 
+function removePlayerFromRosters(match, name) {
+  match.team1Players = (match.team1Players || []).filter(player => player !== name)
+  match.team2Players = (match.team2Players || []).filter(player => player !== name)
+  match.dynamicPlayers = (match.dynamicPlayers || []).filter(player => player !== name)
+  if (match.sharedPlayer === name) match.sharedPlayer = ''
+}
+
+function addPlayerToRoster(match, name, target) {
+  match.team1Players = match.team1Players || []
+  match.team2Players = match.team2Players || []
+  match.dynamicPlayers = match.dynamicPlayers || []
+  const cleanName = (name || '').trim()
+  if (!cleanName) return false
+  if (target === 'shared') {
+    if (match.sharedPlayer && match.sharedPlayer !== cleanName) {
+      if (!match.dynamicPlayers.includes(match.sharedPlayer)) match.dynamicPlayers.push(match.sharedPlayer)
+    }
+    match.sharedPlayer = cleanName
+    match.team1Players = (match.team1Players || []).filter(player => player !== cleanName)
+    match.team2Players = (match.team2Players || []).filter(player => player !== cleanName)
+    match.dynamicPlayers = (match.dynamicPlayers || []).filter(player => player !== cleanName)
+    return true
+  }
+  const key = target === 'team2' ? 'team2Players' : 'team1Players'
+  const otherKey = key === 'team1Players' ? 'team2Players' : 'team1Players'
+  if (!(match[key] || []).includes(cleanName)) match[key] = [...(match[key] || []), cleanName]
+  match[otherKey] = (match[otherKey] || []).filter(player => player !== cleanName)
+  if (match.sharedPlayer === cleanName) match.sharedPlayer = ''
+  match.dynamicPlayers = (match.dynamicPlayers || []).filter(player => player !== cleanName)
+  return true
+}
+
 
 export default function App() {
   const [setup, setSetup] = useState({ team1: '', team2: '', sharedPlayer: '', overs: 5, firstBattingTeam: 'team1' })
@@ -804,6 +836,12 @@ export default function App() {
   const [editOpen, setEditOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [editEvent, setEditEvent] = useState(null)
+  const [playerDialogOpen, setPlayerDialogOpen] = useState(false)
+  const [playerDialogMode, setPlayerDialogMode] = useState('add')
+  const [playerName, setPlayerName] = useState('')
+  const [playerTargetTeam, setPlayerTargetTeam] = useState('team1')
+  const [adjustOpen, setAdjustOpen] = useState(false)
+  const [overrideMessage, setOverrideMessage] = useState('')
 
   useEffect(() => {
     const current = localStorage.getItem(STORAGE_KEY)
@@ -999,6 +1037,34 @@ export default function App() {
     setRenameOpen(true)
   }
 
+  function openAddPlayer() {
+    setPlayerDialogMode('add')
+    setPlayerName('')
+    setPlayerTargetTeam('team1')
+    setPlayerDialogOpen(true)
+  }
+
+  function openMovePlayer(name) {
+    setPlayerDialogMode('move')
+    setPlayerName(name || '')
+    setPlayerTargetTeam('team1')
+    setPlayerDialogOpen(true)
+  }
+
+  function savePlayerDialog() {
+    const cleanName = playerName.trim()
+    if (!cleanName) return
+    const updated = clone(match)
+    if (playerDialogMode === 'move') removePlayerFromRosters(updated, cleanName)
+    addPlayerToRoster(updated, cleanName, playerTargetTeam)
+    ensureInningsDefaults(updated, updated.inningsIndex)
+    setMatch(updated)
+    if (updated.completed) persistFinished(updated)
+    setPlayerDialogOpen(false)
+    setPlayerName('')
+    setPlayerTargetTeam('team1')
+  }
+
   function renamePlayer() {
     const updated = clone(match)
     const from = renameFrom.trim()
@@ -1033,19 +1099,32 @@ export default function App() {
   }
 
   function overridePlayers() {
+    if (!match || !innings || !state) return
     const updated = clone(match)
-    updated.innings[updated.inningsIndex].striker = override.striker
-    updated.innings[updated.inningsIndex].nonStriker = override.nonStriker
-    updated.innings[updated.inningsIndex].currentBowler = override.bowler
-    updated.innings[updated.inningsIndex].manualOverride = {
-      afterBallCount: updated.innings[updated.inningsIndex].balls.length,
-      striker: override.striker,
-      nonStriker: override.nonStriker,
-      currentBowler: override.bowler,
+    const inn = updated.innings[updated.inningsIndex]
+    const striker = override.striker || state.summary.striker || inn.striker
+    const nonStriker = override.nonStriker || state.summary.nonStriker || inn.nonStriker || striker
+    const bowler = override.bowler || state.summary.currentBowler || inn.currentBowler
+    if (!striker || !nonStriker || !bowler) {
+      setOverrideMessage('Select striker, non-striker, and bowler before applying.')
+      return
     }
-    ensurePlayerExists(updated, override.striker)
-    ensurePlayerExists(updated, override.nonStriker)
-    ensurePlayerExists(updated, override.bowler)
+    ensurePlayerExists(updated, striker)
+    ensurePlayerExists(updated, nonStriker)
+    ensurePlayerExists(updated, bowler)
+    inn.striker = striker
+    inn.nonStriker = nonStriker
+    inn.currentBowler = bowler
+    inn.manualOverride = {
+      afterBallCount: inn.balls.length,
+      striker,
+      nonStriker,
+      currentBowler: bowler,
+    }
+    const recalculated = computeState(clone(updated), clone(inn))
+    setOverride({ striker: recalculated.summary.striker, nonStriker: recalculated.summary.nonStriker, bowler: recalculated.summary.currentBowler })
+    setOverrideMessage('Current players updated.')
+    setAdjustOpen(false)
     setMatch(updated)
   }
 
@@ -1231,7 +1310,7 @@ export default function App() {
               </div>
             </section>
 
-            <details className="adjust-panel">
+            <details className="adjust-panel" open={adjustOpen} onToggle={event => setAdjustOpen(event.currentTarget.open)}>
               <summary>Adjust current players</summary>
               <div className="grid-3 adjust-grid">
                 <label>Striker<select value={override.striker} onChange={e => setOverride({ ...override, striker: e.target.value })}>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
@@ -1239,6 +1318,7 @@ export default function App() {
                 <label>Bowler<select value={override.bowler} onChange={e => setOverride({ ...override, bowler: e.target.value })}>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
               </div>
               <button className="secondary" onClick={overridePlayers}>Override current players</button>
+              {overrideMessage && <p className="muted small override-message">{overrideMessage}</p>}
             </details>
 
             <section className="panel log-panel">
@@ -1294,7 +1374,7 @@ export default function App() {
               })}
             </section>
 
-            <PlayerManagement match={match} onRename={startRename} />
+            <PlayerManagement match={match} onRename={startRename} onAdd={openAddPlayer} onMove={openMovePlayer} />
           </aside>
         </main>
       ))}
@@ -1382,6 +1462,15 @@ export default function App() {
           <div className="actions-row"><button className="secondary" onClick={() => setRenameOpen(false)}>Cancel</button><button onClick={renamePlayer}>Rename</button></div>
         </div></div>
       )}
+
+      {playerDialogOpen && match && (
+        <div className="dialog-backdrop"><div className="dialog">
+          <h3>{playerDialogMode === 'move' ? 'Move player' : 'Add player'}</h3>
+          <label>Player name<input value={playerName} onChange={e => setPlayerName(e.target.value)} disabled={playerDialogMode === 'move'} placeholder="Player name" /></label>
+          <label>Team<select value={playerTargetTeam} onChange={e => setPlayerTargetTeam(e.target.value)}><option value="team1">Team 1</option><option value="team2">Team 2</option><option value="shared">Shared</option></select></label>
+          <div className="actions-row"><button className="secondary" onClick={() => setPlayerDialogOpen(false)}>Cancel</button><button onClick={savePlayerDialog}>{playerDialogMode === 'move' ? 'Move Player' : 'Add Player'}</button></div>
+        </div></div>
+      )}
     </div>
   )
 }
@@ -1438,11 +1527,11 @@ function MatchSummaryCard({ match, title = 'Match Summary', compact = false }) {
   )
 }
 
-function PlayerManagement({ match, onRename }) {
+function PlayerManagement({ match, onRename, onAdd, onMove }) {
   const rows = playerDirectory(match)
   return (
     <section className="panel player-panel">
-      <div className="panel-head compact-head"><h2>Players</h2><span className="badge">{rows.length} names</span></div>
+      <div className="panel-head compact-head"><h2>Players</h2><button className="secondary small-button" onClick={onAdd}>Add Player</button><span className="badge">{rows.length} names</span></div>
       {rows.length === 0 ? <p className="muted">No players yet.</p> : (
         <div className="player-table-wrap">
           <table>
@@ -1450,7 +1539,7 @@ function PlayerManagement({ match, onRename }) {
             <tbody>{rows.map(row => (
               <tr key={row.team + '-' + row.name}>
                 <td>{row.name}</td><td>{row.team}</td><td>{row.source}</td>
-                <td><button className="secondary small-button" onClick={() => onRename(row.name)}>Rename</button></td>
+                <td><div className="row-actions"><button className="secondary small-button" onClick={() => onRename(row.name)}>Rename</button><button className="secondary small-button" onClick={() => onMove(row.name)}>Move</button></div></td>
               </tr>
             ))}</tbody>
           </table>
@@ -1491,15 +1580,19 @@ function GamesPanel({ history, openSavedMatch }) {
                         <p className="muted small">Score: {savedState.summary.totalRuns}/{savedState.summary.wickets} in {savedState.summary.overs}</p>
                         <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={savedState.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
                         <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={savedState.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
-                        <div className="commentary-block">
-                          <div className="muted small">Commentary</div>
-                          {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
-                            <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
-                          ))}
-                        </div>
                       </div>
                     )
                   })}
+                </div>
+                <div className="history-commentary-grid">
+                  {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => (
+                    <div className="commentary-block" key={'commentary-' + inn.number}>
+                      <h3>Innings {inn.number} Commentary</h3>
+                      {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
+                        <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
+                      ))}
+                    </div>
+                  ))}
                 </div>
               </details>
             )
