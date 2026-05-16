@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { toPng } from 'html-to-image'
 import { listMatches, upsertMatch } from './db'
 
 const STORAGE_KEY = 'cricket-react-current-v1'
@@ -1499,6 +1500,51 @@ function CopySummaryButton({ match, label = 'Copy Summary', summaryLabel = 'Cric
   return <button className="secondary small-button" onClick={copySummary}>{copied ? 'Copied' : label}</button>
 }
 
+function CopyScorecardImageButton({ targetId }) {
+  const [status, setStatus] = useState('')
+
+  async function copyImage(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    const node = document.getElementById(targetId)
+    if (!node) return
+    setStatus('Preparing')
+    try {
+      const dataUrl = await toPng(node, {
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        pixelRatio: 2,
+      })
+      const response = await fetch(dataUrl)
+      const blob = await response.blob()
+      const downloadImage = () => {
+        const link = document.createElement('a')
+        link.href = dataUrl
+        link.download = 'cricket-scorecard.png'
+        link.click()
+      }
+      if (navigator.clipboard?.write && window.ClipboardItem) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+          setStatus('Copied image')
+        } catch (error) {
+          downloadImage()
+          setStatus('Downloaded')
+        }
+      } else {
+        downloadImage()
+        setStatus('Downloaded')
+      }
+    } catch (error) {
+      console.error('Failed to copy scorecard image', error)
+      setStatus('Copy failed')
+    }
+    window.setTimeout(() => setStatus(''), 2200)
+  }
+
+  return <button className="secondary small-button image-copy-button" onClick={copyImage}>{status || 'Copy Scorecard Image'}</button>
+}
+
 function MatchSummaryCard({ match, title = 'Match Summary', compact = false }) {
   const highlight = matchHighlights(match)
   if (!highlight) return null
@@ -1561,28 +1607,41 @@ function GamesPanel({ history, openSavedMatch }) {
           <span className="badge">{history.length} saved</span>
         </div>
         <div className="saved-list">
-          {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map(item => {
+          {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map((item, index) => {
             const savedMatch = item.match || item
             const displayDate = formatMatchDate(item.savedAt || savedMatch.savedAt || savedMatch.updated_at || savedMatch.createdAt)
+            const scorecardTargetId = `scorecard-${item.id || item.gameNumber || index}`
             return (
               <details className="saved-item history-item" key={item.id}>
                 <summary>
                   <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
-                  <button className="secondary small-button" onClick={(event) => { event.preventDefault(); openSavedMatch(item) }}>Open / Edit</button>
+                  <span className="saved-actions">
+                    <button className="secondary small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSavedMatch(item) }}>Open / Edit</button>
+                  </span>
                 </summary>
                 <MatchSummaryCard match={savedMatch} title={'Game ' + (item.gameNumber || '—')} compact />
-                <div className="history-grid">
-                  {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
-                    const savedState = computeState(clone(savedMatch), clone(inn))
-                    return (
-                      <div className="mini-card" key={inn.number}>
-                        <h3>Innings {inn.number} · {teamLabel(inn.battingTeamKey)}</h3>
-                        <p className="muted small">Score: {savedState.summary.totalRuns}/{savedState.summary.wickets} in {savedState.summary.overs}</p>
-                        <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={savedState.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
-                        <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={savedState.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
-                      </div>
-                    )
-                  })}
+                <div className="detail-actions"><CopyScorecardImageButton targetId={scorecardTargetId} /></div>
+                <div id={scorecardTargetId} className="scorecard-export-target">
+                  <div className="export-title">
+                    <span>{displayDate}</span>
+                    <strong>Game {item.gameNumber || '—'} · {matchResult(savedMatch)}</strong>
+                  </div>
+                  <div className="history-grid">
+                    {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
+                      const savedState = computeState(clone(savedMatch), clone(inn))
+                      return (
+                        <div className="mini-card scorecard-innings-card" key={inn.number}>
+                          <div className="innings-card-head">
+                            <h3>Innings {inn.number} · {teamLabel(inn.battingTeamKey)}</h3>
+                            <span>{savedState.summary.totalRuns}/{savedState.summary.wickets}</span>
+                          </div>
+                          <p className="muted small">Overs {savedState.summary.overs} · Extras {savedState.summary.extras}</p>
+                          <ScoreTable title="Batting" headers={['Player', 'R', 'B', 'Status']} rows={savedState.batting.map(p => [p.name, p.runs, p.balls, p.status])} />
+                          <ScoreTable title="Bowling" headers={['Bowler', 'O', 'R', 'W']} rows={savedState.bowling.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets])} />
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
                 <div className="history-commentary-grid">
                   {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => (
