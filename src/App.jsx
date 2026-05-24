@@ -1745,7 +1745,7 @@ function AnalyticsPanel({ history }) {
   const analytics = useMemo(() => analyzeMatches(completedItems, { season: selectedSeason, matchId: selectedMatchId, team: selectedTeam, player: playerFilter }), [completedItems, selectedSeason, selectedMatchId, selectedTeam, playerFilter])
   const totals = analytics.totals
   const battingLeaders = [...analytics.battingRows].sort((a, b) => b.runs - a.runs).slice(0, 8)
-  const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
+  const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => b.runs - a.runs || safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
   const bowlingLeaders = [...analytics.bowlingRows].sort((a, b) => b.wickets - a.wickets || safeDivide(a.runs, a.balls / BALLS_PER_OVER, 999) - safeDivide(b.runs, b.balls / BALLS_PER_OVER, 999)).slice(0, 8)
   const economyLeaders = [...analytics.bowlingRows].filter(p => p.balls >= BALLS_PER_OVER).sort((a, b) => safeDivide(a.runs, a.balls / BALLS_PER_OVER) - safeDivide(b.runs, b.balls / BALLS_PER_OVER)).slice(0, 8)
   const selectedBattingPlayer = playerFilter ? analytics.battingRows.find(p => p.name.toLowerCase() === playerFilter.trim().toLowerCase()) || analytics.battingRows[0] : null
