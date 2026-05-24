@@ -33,3 +33,15 @@ export async function upsertMatch(match) {
   if (error) throw error
   return data
 }
+
+export async function deleteMatch(matchId) {
+  if (!isSupabaseConfigured || !supabase || !matchId) return null
+
+  const { error } = await supabase
+    .from('matches')
+    .delete()
+    .eq('app_match_id', matchId)
+
+  if (error) throw error
+  return true
+}

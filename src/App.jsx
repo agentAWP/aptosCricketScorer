@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { toPng } from 'html-to-image'
-import { listMatches, upsertMatch } from './db'
+import { deleteMatch, listMatches, upsertMatch } from './db'
 
 const STORAGE_KEY = 'cricket-react-current-v1'
 const HISTORY_KEY = 'cricket-react-history-v1'
@@ -112,9 +112,10 @@ function getAllPlayers(match) {
 function activeTeamPlayers(match, innings) {
   const battingPlayers = innings.battingTeamKey === 'team1' ? match.team1Players : match.team2Players
   const bowlingPlayers = innings.battingTeamKey === 'team1' ? match.team2Players : match.team1Players
+  const sharedPlayers = match.sharedPlayer ? [match.sharedPlayer] : []
   return {
-    battingPlayers: [...battingPlayers, ...(match.sharedPlayer ? [match.sharedPlayer] : [])],
-    bowlingPlayers,
+    battingPlayers: [...battingPlayers, ...sharedPlayers],
+    bowlingPlayers: [...bowlingPlayers, ...sharedPlayers],
   }
 }
 
@@ -275,6 +276,12 @@ function computeState(match, innings) {
   let legalBalls = 0
   let lastOverCompleted = false
 
+  if (innings.manualOverride && innings.manualOverride.afterBallCount === 0) {
+    striker = innings.manualOverride.striker || striker
+    nonStriker = innings.manualOverride.nonStriker || nonStriker
+    currentBowler = innings.manualOverride.currentBowler || currentBowler
+  }
+
   innings.balls.forEach((ball, index) => {
     ensurePlayerExists(match, ball.batter)
     ensurePlayerExists(match, ball.dismissalPlayer)
@@ -342,17 +349,6 @@ function computeState(match, innings) {
       currentBowler = innings.manualOverride.currentBowler || currentBowler
     }
   })
-
-  if (innings.manualOverride && innings.manualOverride.afterBallCount === 0) {
-    striker = innings.manualOverride.striker || striker
-    nonStriker = innings.manualOverride.nonStriker || nonStriker
-    currentBowler = innings.manualOverride.currentBowler || currentBowler
-  }
-  if (innings.manualOverride && innings.manualOverride.afterBallCount >= innings.balls.length && innings.balls.length > 0) {
-    striker = innings.manualOverride.striker || striker
-    nonStriker = innings.manualOverride.nonStriker || nonStriker
-    currentBowler = innings.manualOverride.currentBowler || currentBowler
-  }
 
   const target = innings.number === 2 ? computeState(match, match.innings[0]).summary.totalRuns + 1 : null
   const availableBatters = [...new Set([...battingPlayers, ...match.dynamicPlayers])]
@@ -974,6 +970,25 @@ export default function App() {
     setActiveView('score')
   }
 
+  async function deleteSavedMatch(item) {
+    const savedMatch = item.match || item
+    const matchId = item.id || savedMatch.id
+    if (!matchId) return
+    const label = `Match ${item.gameNumber || ''}`.trim()
+    if (!window.confirm(`Delete ${label}? This removes it from this app and Supabase.`)) return
+
+    setSyncStatus('syncing')
+    try {
+      await deleteMatch(matchId)
+      setHistory(prev => normalizeHistoryItems(prev).filter(entry => entry.id !== matchId && entry.match?.id !== matchId))
+      if (match?.id === matchId) setMatch(null)
+      setSyncStatus('synced')
+    } catch (error) {
+      console.error('Failed to delete match from Supabase', error)
+      setSyncStatus('failed')
+    }
+  }
+
   function startMatch() {
     const created = createMatch(setup)
     ensureInningsDefaults(created, 0)
@@ -1416,7 +1431,7 @@ export default function App() {
         </main>
       ))}
 
-      {activeView === 'games' && <GamesPanel history={history} openSavedMatch={openSavedMatch} />}
+      {activeView === 'games' && <GamesPanel history={history} openSavedMatch={openSavedMatch} deleteSavedMatch={deleteSavedMatch} />}
       {activeView === 'analytics' && <AnalyticsPanel history={history} />}
 
       {reviewOpen && reviewEvent && (
@@ -1631,7 +1646,7 @@ function PlayerManagement({ match, onRename, onAdd, onMove }) {
   )
 }
 
-function GamesPanel({ history, openSavedMatch }) {
+function GamesPanel({ history, openSavedMatch, deleteSavedMatch }) {
   const groupedHistory = groupHistoryByDay(history)
   return (
     <main className="view-stack">
@@ -1658,6 +1673,7 @@ function GamesPanel({ history, openSavedMatch }) {
                   <span className="saved-summary"><strong>Match {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
                   <span className="saved-actions">
                     <button className="secondary small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSavedMatch(item) }}>Open / Edit</button>
+                    <button className="secondary danger-button small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); deleteSavedMatch(item) }}>Delete</button>
                   </span>
                 </summary>
                 <MatchSummaryCard match={savedMatch} title={'Match ' + (item.gameNumber || '—')} compact />
