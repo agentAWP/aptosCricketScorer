@@ -456,6 +456,33 @@ function formatMatchDate(value) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(date)
 }
 
+function formatMatchDay(value) {
+  if (!value) return "Date unavailable"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "Date unavailable"
+  return new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(date)
+}
+
+function matchSavedAt(item, match) {
+  return item.savedAt || match.savedAt || match.updated_at || match.createdAt
+}
+
+function groupHistoryByDay(history) {
+  const groups = []
+  ;(history || []).forEach((item, index) => {
+    const match = item.match || item
+    const savedAt = matchSavedAt(item, match)
+    const day = formatMatchDay(savedAt)
+    let group = groups.find(entry => entry.day === day)
+    if (!group) {
+      group = { day, items: [] }
+      groups.push(group)
+    }
+    group.items.push({ item, index, savedAt })
+  })
+  return groups
+}
+
 function normalizeHistoryItems(items) {
   return (items || [])
     .map((item, index) => {
@@ -1500,7 +1527,7 @@ function CopySummaryButton({ match, label = 'Copy Summary', summaryLabel = 'Cric
   return <button className="secondary small-button" onClick={copySummary}>{copied ? 'Copied' : label}</button>
 }
 
-function CopyScorecardImageButton({ targetId }) {
+function CopyScorecardImageButton({ targetId, label = 'Copy Scorecard Image', filename = 'cricket-scorecard.png' }) {
   const [status, setStatus] = useState('')
 
   async function copyImage(event) {
@@ -1520,7 +1547,7 @@ function CopyScorecardImageButton({ targetId }) {
       const downloadImage = () => {
         const link = document.createElement('a')
         link.href = dataUrl
-        link.download = 'cricket-scorecard.png'
+        link.download = filename
         link.click()
       }
       if (navigator.clipboard?.write && window.ClipboardItem) {
@@ -1542,7 +1569,7 @@ function CopyScorecardImageButton({ targetId }) {
     window.setTimeout(() => setStatus(''), 2200)
   }
 
-  return <button className="secondary small-button image-copy-button" onClick={copyImage}>{status || 'Copy Scorecard Image'}</button>
+  return <button className="secondary small-button image-copy-button" onClick={copyImage}>{status || label}</button>
 }
 
 function MatchSummaryCard({ match, title = 'Match Summary', compact = false }) {
@@ -1596,6 +1623,7 @@ function PlayerManagement({ match, onRename, onAdd, onMove }) {
 }
 
 function GamesPanel({ history, openSavedMatch }) {
+  const groupedHistory = groupHistoryByDay(history)
   return (
     <main className="view-stack">
       <section className="panel games-panel">
@@ -1607,24 +1635,28 @@ function GamesPanel({ history, openSavedMatch }) {
           <span className="badge">{history.length} saved</span>
         </div>
         <div className="saved-list">
-          {history.length === 0 ? <p className="muted">No saved matches yet.</p> : history.map((item, index) => {
-            const savedMatch = item.match || item
-            const displayDate = formatMatchDate(item.savedAt || savedMatch.savedAt || savedMatch.updated_at || savedMatch.createdAt)
-            const scorecardTargetId = `scorecard-${item.id || item.gameNumber || index}`
+          {history.length === 0 ? <p className="muted">No saved matches yet.</p> : groupedHistory.map(group => (
+            <section className="saved-date-group" key={group.day}>
+              <h3>{group.day}</h3>
+              {group.items.map(({ item, index, savedAt }) => {
+                const savedMatch = item.match || item
+                const displayDate = formatMatchDate(savedAt)
+                const scorecardTargetId = `scorecard-${item.id || item.gameNumber || index}`
+                const commentaryTargetId = `commentary-${item.id || item.gameNumber || index}`
             return (
-              <details className="saved-item history-item" key={item.id}>
+              <details className="saved-item history-item" key={item.id || `${group.day}-${index}`}>
                 <summary>
-                  <span className="saved-summary"><span className="saved-date">{displayDate}</span><strong>Game {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
+                  <span className="saved-summary"><strong>Match {item.gameNumber || '—'}</strong><span>{matchResult(savedMatch)}</span></span>
                   <span className="saved-actions">
                     <button className="secondary small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSavedMatch(item) }}>Open / Edit</button>
                   </span>
                 </summary>
-                <MatchSummaryCard match={savedMatch} title={'Game ' + (item.gameNumber || '—')} compact />
+                <MatchSummaryCard match={savedMatch} title={'Match ' + (item.gameNumber || '—')} compact />
                 <div className="detail-actions"><CopyScorecardImageButton targetId={scorecardTargetId} /></div>
                 <div id={scorecardTargetId} className="scorecard-export-target">
                   <div className="export-title">
                     <span>{displayDate}</span>
-                    <strong>Game {item.gameNumber || '—'} · {matchResult(savedMatch)}</strong>
+                    <strong>Match {item.gameNumber || '—'} · {matchResult(savedMatch)}</strong>
                   </div>
                   <div className="history-grid">
                     {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => {
@@ -1643,19 +1675,30 @@ function GamesPanel({ history, openSavedMatch }) {
                     })}
                   </div>
                 </div>
-                <div className="history-commentary-grid">
-                  {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => (
-                    <div className="commentary-block" key={'commentary-' + inn.number}>
-                      <h3>Innings {inn.number} Commentary</h3>
-                      {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
-                        <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
-                      ))}
-                    </div>
-                  ))}
+                <div className="detail-actions">
+                  <CopyScorecardImageButton targetId={commentaryTargetId} label="Copy Commentary Image" filename="cricket-commentary-summary.png" />
+                </div>
+                <div id={commentaryTargetId} className="commentary-export-target">
+                  <div className="export-title">
+                    <span>{displayDate}</span>
+                    <strong>Match {item.gameNumber || '—'} · Commentary Summary</strong>
+                  </div>
+                  <div className="history-commentary-grid">
+                    {isValidMatch(savedMatch) && savedMatch.innings.map((inn) => (
+                      <div className="commentary-block" key={'commentary-' + inn.number}>
+                        <h3>Innings {inn.number} Commentary</h3>
+                        {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
+                          <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </details>
             )
-          })}
+              })}
+            </section>
+          ))}
         </div>
       </section>
     </main>
