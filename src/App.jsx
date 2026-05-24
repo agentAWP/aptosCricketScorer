@@ -1739,13 +1739,11 @@ function AnalyticsPanel({ history }) {
   }, [completedItems, currentSeason])
   const [selectedSeason, setSelectedSeason] = useState(currentSeason)
   const [selectedMatchId, setSelectedMatchId] = useState('all')
-  const [selectedTeam, setSelectedTeam] = useState('all')
   const [playerFilter, setPlayerFilter] = useState('')
   const seasonItems = useMemo(() => completedItems.filter(item => selectedSeason === 'all' || matchSeason(item) === selectedSeason), [completedItems, selectedSeason])
-  const analytics = useMemo(() => analyzeMatches(completedItems, { season: selectedSeason, matchId: selectedMatchId, team: selectedTeam, player: playerFilter }), [completedItems, selectedSeason, selectedMatchId, selectedTeam, playerFilter])
+  const analytics = useMemo(() => analyzeMatches(completedItems, { season: selectedSeason, matchId: selectedMatchId, player: playerFilter }), [completedItems, selectedSeason, selectedMatchId, playerFilter])
   const totals = analytics.totals
   const battingLeaders = [...analytics.battingRows].sort((a, b) => b.runs - a.runs).slice(0, 8)
-  const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => b.runs - a.runs || safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
   const bowlingLeaders = [...analytics.bowlingRows].sort((a, b) => b.wickets - a.wickets || safeDivide(a.runs, a.balls / BALLS_PER_OVER, 999) - safeDivide(b.runs, b.balls / BALLS_PER_OVER, 999)).slice(0, 8)
   const economyLeaders = [...analytics.bowlingRows].filter(p => p.balls >= BALLS_PER_OVER).sort((a, b) => safeDivide(a.runs, a.balls / BALLS_PER_OVER) - safeDivide(b.runs, b.balls / BALLS_PER_OVER)).slice(0, 8)
   const selectedBattingPlayer = playerFilter ? analytics.battingRows.find(p => p.name.toLowerCase() === playerFilter.trim().toLowerCase()) || analytics.battingRows[0] : null
@@ -1786,11 +1784,6 @@ function AnalyticsPanel({ history }) {
               <option value="all">All completed matches</option>
               {seasonItems.map(item => <option key={item.id} value={item.id}>{formatMatchDate(item.savedAt || item.match.createdAt)} · Match {item.gameNumber || '—'}</option>)}
             </select></label>
-            <label>Team<select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)}>
-              <option value="all">Both teams</option>
-              <option value="team1">Team 1</option>
-              <option value="team2">Team 2</option>
-            </select></label>
             <label>Player filter<input value={playerFilter} onChange={e => setPlayerFilter(e.target.value)} placeholder="Search player" /></label>
           </div>
 
@@ -1809,16 +1802,6 @@ function AnalyticsPanel({ history }) {
             <Stat label="Matches" value={totals.matches} />
           </div>
 
-          <div className="team-card-grid">
-            {analytics.teamRows.map(team => (
-              <div className="team-card" key={team.name}>
-                <div className="panel-kicker">{team.name}</div>
-                <strong>{team.wins}-{team.losses}{team.ties ? '-' + team.ties : ''}</strong>
-                <span>Avg score {formatRate(safeDivide(team.runsFor, team.matches))} · Boundaries {team.boundaries}</span>
-              </div>
-            ))}
-          </div>
-
           {selectedBattingPlayer && (
             <section className="player-drilldown">
               <div className="panel-head compact-head"><h3>{selectedBattingPlayer.name}</h3><span className="badge">Player detail</span></div>
@@ -1832,9 +1815,7 @@ function AnalyticsPanel({ history }) {
           )}
 
           <div className="analytics-grid">
-            <ScoreTable title="Team Results" headers={['Team', 'M', 'W', 'L', 'T', 'Runs', 'Wkts', 'Boundaries']} rows={analytics.teamRows.map(team => [team.name, team.matches, team.wins, team.losses, team.ties, `${team.runsFor}/${team.runsAgainst}`, `${team.wicketsTaken}/${team.wicketsLost}`, team.boundaries])} />
-            <ScoreTable title="Top Run Scorers" headers={['Player', 'Inn', 'R', 'B', 'SR', '4s', '6s']} rows={battingLeaders.map(p => [p.name, p.innings, p.runs, p.balls, formatRate(safeDivide(p.runs * 100, p.balls)), p.fours, p.sixes])} />
-            <ScoreTable title="Strike Rate" headers={['Player', 'R', 'B', 'SR', '1s', '2s', 'NO']} rows={strikeLeaders.map(p => [p.name, p.runs, p.balls, formatRate(safeDivide(p.runs * 100, p.balls)), p.singles, p.doubles, p.notOuts])} />
+            <ScoreTable title="Top Run Scorers" headers={['Player', 'Inn', 'R', 'B', 'SR', '4s', '6s', '1s', '2s', 'NO']} rows={battingLeaders.map(p => [p.name, p.innings, p.runs, p.balls, formatRate(safeDivide(p.runs * 100, p.balls)), p.fours, p.sixes, p.singles, p.doubles, p.notOuts])} />
             <ScoreTable title="Bowling Wickets" headers={['Bowler', 'O', 'R', 'W', 'Econ', 'Dots']} rows={bowlingLeaders.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets, formatRate(safeDivide(p.runs, p.balls / BALLS_PER_OVER)), p.dots])} />
             <ScoreTable title="Economy" headers={['Bowler', 'O', 'R', 'W', 'Econ', 'C/B']} rows={economyLeaders.map(p => [p.name, oversFromBalls(p.balls), p.runs, p.wickets, formatRate(safeDivide(p.runs, p.balls / BALLS_PER_OVER)), `${p.caught}/${p.bowled}`])} />
             <ScoreTable title="Wicket Types" headers={['Type', 'Count']} rows={Object.entries(analytics.wicketTypes).map(([type, count]) => [type, count])} />
