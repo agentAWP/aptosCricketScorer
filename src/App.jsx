@@ -467,6 +467,13 @@ function matchSavedAt(item, match) {
   return item.savedAt || match.savedAt || match.updated_at || match.createdAt
 }
 
+function matchSeason(item) {
+  const match = item.match || item
+  const date = new Date(matchSavedAt(item, match))
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  return String(date.getFullYear())
+}
+
 function groupHistoryByDay(history) {
   const groups = []
   ;(history || []).forEach((item, index) => {
@@ -603,10 +610,12 @@ function summarizeInningsAnalytics(match, innings) {
 function analyzeMatches(historyItems, filters = {}) {
   const selectedTeam = filters.team || 'all'
   const selectedMatchId = filters.matchId || 'all'
+  const selectedSeason = filters.season || 'all'
   const selectedPlayer = (filters.player || '').trim().toLowerCase()
   const validItems = normalizeHistoryItems(historyItems)
     .filter(item => item.match.completed || item.match.innings?.[1]?.completed)
     .filter(item => selectedMatchId === 'all' || item.id === selectedMatchId)
+    .filter(item => selectedSeason === 'all' || matchSeason(item) === selectedSeason)
 
   const batting = new Map()
   const bowling = new Map()
@@ -1723,10 +1732,17 @@ function QuickGroup({ title, items, onPick, extraAction = null }) {
 
 function AnalyticsPanel({ history }) {
   const completedItems = useMemo(() => normalizeHistoryItems(history).filter(item => item.match.completed || item.match.innings?.[1]?.completed), [history])
+  const currentSeason = String(new Date().getFullYear())
+  const seasonOptions = useMemo(() => {
+    const seasons = [...new Set([currentSeason, ...completedItems.map(matchSeason)])].filter(Boolean).sort((a, b) => b.localeCompare(a))
+    return seasons
+  }, [completedItems, currentSeason])
+  const [selectedSeason, setSelectedSeason] = useState(currentSeason)
   const [selectedMatchId, setSelectedMatchId] = useState('all')
   const [selectedTeam, setSelectedTeam] = useState('all')
   const [playerFilter, setPlayerFilter] = useState('')
-  const analytics = useMemo(() => analyzeMatches(completedItems, { matchId: selectedMatchId, team: selectedTeam, player: playerFilter }), [completedItems, selectedMatchId, selectedTeam, playerFilter])
+  const seasonItems = useMemo(() => completedItems.filter(item => selectedSeason === 'all' || matchSeason(item) === selectedSeason), [completedItems, selectedSeason])
+  const analytics = useMemo(() => analyzeMatches(completedItems, { season: selectedSeason, matchId: selectedMatchId, team: selectedTeam, player: playerFilter }), [completedItems, selectedSeason, selectedMatchId, selectedTeam, playerFilter])
   const totals = analytics.totals
   const battingLeaders = [...analytics.battingRows].sort((a, b) => b.runs - a.runs).slice(0, 8)
   const strikeLeaders = [...analytics.battingRows].filter(p => p.balls > 0).sort((a, b) => safeDivide(b.runs * 100, b.balls) - safeDivide(a.runs * 100, a.balls)).slice(0, 8)
@@ -1738,8 +1754,14 @@ function AnalyticsPanel({ history }) {
   const maxOverRuns = Math.max(1, ...analytics.matchBreakdowns.flatMap(match => match.innings.flatMap(inn => inn.overs.map(over => over.totalRuns))))
 
   useEffect(() => {
-    if (selectedMatchId !== 'all' && !completedItems.some(item => item.id === selectedMatchId)) setSelectedMatchId('all')
-  }, [completedItems, selectedMatchId])
+    if (selectedSeason !== 'all' && !seasonOptions.includes(selectedSeason)) {
+      setSelectedSeason(seasonOptions.includes(currentSeason) ? currentSeason : 'all')
+    }
+  }, [currentSeason, seasonOptions, selectedSeason])
+
+  useEffect(() => {
+    if (selectedMatchId !== 'all' && !seasonItems.some(item => item.id === selectedMatchId)) setSelectedMatchId('all')
+  }, [seasonItems, selectedMatchId])
 
   return (
     <section className="panel analytics-panel">
@@ -1756,9 +1778,13 @@ function AnalyticsPanel({ history }) {
       ) : (
         <>
           <div className="analytics-filters">
+            <label>Season<select value={selectedSeason} onChange={e => { setSelectedSeason(e.target.value); setSelectedMatchId('all') }}>
+              <option value="all">All seasons</option>
+              {seasonOptions.map(season => <option key={season} value={season}>Season {season}</option>)}
+            </select></label>
             <label>Match<select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)}>
               <option value="all">All completed matches</option>
-              {completedItems.map(item => <option key={item.id} value={item.id}>{formatMatchDate(item.savedAt || item.match.createdAt)} · Game {item.gameNumber || '—'}</option>)}
+              {seasonItems.map(item => <option key={item.id} value={item.id}>{formatMatchDate(item.savedAt || item.match.createdAt)} · Match {item.gameNumber || '—'}</option>)}
             </select></label>
             <label>Team<select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)}>
               <option value="all">Both teams</option>
