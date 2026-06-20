@@ -99,6 +99,7 @@ function createMatch(setup) {
     team1Players: parseCsv(setup.team1),
     team2Players: parseCsv(setup.team2),
     sharedPlayer: (setup.sharedPlayer || '').trim(),
+    isTestMatch: !!setup.testMatch,
     dynamicPlayers: [],
     inningsIndex: 0,
     innings: [createInnings(1, first), createInnings(2, second)],
@@ -855,7 +856,7 @@ function addPlayerToRoster(match, name, target) {
 
 
 export default function App() {
-  const [setup, setSetup] = useState({ team1: '', team2: '', sharedPlayer: '', overs: 5, firstBattingTeam: 'team1' })
+  const [setup, setSetup] = useState({ team1: '', team2: '', sharedPlayer: '', overs: 5, firstBattingTeam: 'team1', testMatch: false })
   const [match, setMatch] = useState(null)
   const [activeView, setActiveView] = useState('score')
   const [history, setHistory] = useState([])
@@ -915,6 +916,10 @@ export default function App() {
   useEffect(() => {
     if (match) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(match))
+      if (match.isTestMatch) {
+        setSyncStatus('local')
+        return
+      }
       setSyncStatus('syncing')
       upsertMatch(match)
         .then(() => setSyncStatus('synced'))
@@ -949,6 +954,10 @@ export default function App() {
   }, [match?.inningsIndex, innings?.balls?.length])
 
   function persistFinished(updated) {
+    if (updated.isTestMatch) {
+      setSyncStatus('local')
+      return
+    }
     setHistory(prev => {
       const normalized = normalizeHistoryItems(prev)
       const existing = normalized.findIndex(item => item.id === updated.id)
@@ -1312,6 +1321,7 @@ export default function App() {
         </div>
         <div className="actions-row">
           <button className="secondary" onClick={() => startRename()} disabled={!match}>Rename Player</button>
+          {match?.isTestMatch && <span className="badge test-match-badge">Test Match</span>}
           <SyncBadge status={syncStatus} />
           <button className="secondary" onClick={newMatch}>New Match</button>
         </div>
@@ -1340,7 +1350,11 @@ export default function App() {
               <label>Overs<input type="number" min="1" value={setup.overs} onChange={e => setSetup({ ...setup, overs: e.target.value })} /></label>
               <label>Bat first<select value={setup.firstBattingTeam} onChange={e => setSetup({ ...setup, firstBattingTeam: e.target.value })}><option value="team1">Team 1</option><option value="team2">Team 2</option></select></label>
             </div>
-            <button className="primary-action" onClick={startMatch}>Start Match</button>
+            <label className="test-match-toggle">
+              <input type="checkbox" checked={setup.testMatch} onChange={e => setSetup({ ...setup, testMatch: e.target.checked })} />
+              <span><strong>Test match</strong><small>Excluded from Supabase, saved games, and analytics.</small></span>
+            </label>
+            <button className="primary-action" onClick={startMatch}>{setup.testMatch ? 'Start Test Match' : 'Start Match'}</button>
           </section>
           <section className="panel glance-panel">
             <div className="panel-kicker">At a glance</div>
@@ -1358,7 +1372,7 @@ export default function App() {
           <section className="score-main">
             <div className="score-hero">
               <div>
-                <div className="panel-kicker">{teamLabel(innings.battingTeamKey)} batting · Innings {innings.number}</div>
+                <div className="panel-kicker">{match.isTestMatch ? 'Test Match · ' : ''}{teamLabel(innings.battingTeamKey)} batting · Innings {innings.number}</div>
                 <div className="live-score">{state.summary.totalRuns}/{state.summary.wickets}</div>
                 <div className="muted">Overs {state.summary.overs} · Extras {state.summary.extras}</div>
               </div>
@@ -1441,7 +1455,7 @@ export default function App() {
           </section>
 
           <aside className="score-side">
-            {match.completed && <MatchSummaryCard match={match} title="Completed Match" />}
+            {match.completed && <MatchSummaryCard match={match} title={match.isTestMatch ? 'Completed Test Match' : 'Completed Match'} />}
             <section className="panel scorecard-panel">
               <div className="panel-head compact-head"><h2>Scorecard</h2><span className="badge">Live</span></div>
               <div className="score-block">
