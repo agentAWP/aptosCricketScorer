@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { toPng } from 'html-to-image'
+import { generateBallCommentary } from './commentary'
 import { deleteMatch, listMatches, upsertMatch } from './db'
 
 const STORAGE_KEY = 'cricket-react-current-v1'
@@ -1007,13 +1008,20 @@ export default function App() {
 
   function pushBall(event) {
     const updated = clone(match)
+    const targetInnings = updated.innings[updated.inningsIndex]
+    if (!event.commentary) {
+      const generated = generateBallCommentary(event, targetInnings.balls)
+      event.commentary = generated.text
+      event.commentaryTemplateId = generated.templateId
+      event.commentaryEdited = false
+    }
     ensurePlayerExists(updated, event.batter)
     ensurePlayerExists(updated, event.dismissalPlayer)
     ensurePlayerExists(updated, event.nextBatter)
     ensurePlayerExists(updated, event.bowler)
-    updated.innings[updated.inningsIndex].balls.push(event)
-    const updatedState = computeState(clone(updated), clone(updated.innings[updated.inningsIndex]))
-    updated.innings[updated.inningsIndex].completed = updatedState.summary.completed
+    targetInnings.balls.push(event)
+    const updatedState = computeState(clone(updated), clone(targetInnings))
+    targetInnings.completed = updatedState.summary.completed
     if (updated.inningsIndex === 1 && updatedState.summary.completed) {
       updated.completed = true
       persistFinished(updated)
@@ -1193,13 +1201,37 @@ export default function App() {
     const targetInnings = match.innings[inningsIndex]
     const ball = targetInnings?.balls?.[ballIndex]
     if (!ball) return
+    const editable = clone(ball)
+    if (!editable.commentary) {
+      const generated = generateBallCommentary(editable, targetInnings.balls.slice(0, ballIndex))
+      editable.commentary = generated.text
+      editable.commentaryTemplateId = generated.templateId
+      editable.commentaryEdited = false
+    }
     setEditTarget({ inningsIndex, ballIndex })
-    setEditEvent(clone(ball))
+    setEditEvent(editable)
     setEditOpen(true)
   }
 
   function updateEditField(field, value) {
-    setEditEvent(prev => ({ ...prev, [field]: value }))
+    setEditEvent(prev => {
+      const next = { ...prev, [field]: value }
+      if (field === 'commentary') return { ...next, commentaryEdited: true }
+      if (!prev.commentaryEdited && editTarget) {
+        const targetInnings = match.innings[editTarget.inningsIndex]
+        const generated = generateBallCommentary(next, targetInnings.balls.slice(0, editTarget.ballIndex))
+        next.commentary = generated.text
+        next.commentaryTemplateId = generated.templateId
+      }
+      return next
+    })
+  }
+
+  function regenerateEditCommentary() {
+    if (!editEvent || !editTarget) return
+    const targetInnings = match.innings[editTarget.inningsIndex]
+    const generated = generateBallCommentary(editEvent, targetInnings.balls.slice(0, editTarget.ballIndex), { variantOffset: Date.now() })
+    setEditEvent(prev => ({ ...prev, commentary: generated.text, commentaryTemplateId: generated.templateId, commentaryEdited: false }))
   }
 
   function saveEdit() {
@@ -1215,6 +1247,12 @@ export default function App() {
       nextBatterRequired: !!editEvent.wicket && !!editEvent.nextBatter,
       askDismissedBatter: false,
       needsReview: false,
+    }
+    if (!cleaned.commentary) {
+      const generated = generateBallCommentary(cleaned, targetInnings.balls.slice(0, editTarget.ballIndex))
+      cleaned.commentary = generated.text
+      cleaned.commentaryTemplateId = generated.templateId
+      cleaned.commentaryEdited = false
     }
     ensurePlayerExists(updated, cleaned.batter)
     ensurePlayerExists(updated, cleaned.bowler)
@@ -1425,8 +1463,7 @@ export default function App() {
                     <summary>Innings {inn.number} ({teamLabel(inn.battingTeamKey)}) · {innState.summary.totalRuns}/{innState.summary.wickets}</summary>
                     {inn.balls.length === 0 ? <p className="muted small">No commentary recorded.</p> : inn.balls.map((ball, ballIndex) => (
                       <div className="ball-item" key={ball.id}>
-                        <strong>{legalBallLabel(ballIndex, inn)}</strong> · {ball.raw}
-                        <div className="muted small">{summarizeBallLong(ball)}</div>
+                        <strong>{legalBallLabel(ballIndex, inn)}</strong> · <span className="generated-commentary">{ball.commentary || ball.raw}</span>
                         <button className="secondary small-button" onClick={() => openEdit(inningsIndex, ballIndex)}>Edit</button>
                       </div>
                     ))}
@@ -1511,6 +1548,11 @@ export default function App() {
           </div>
           <label>Next batter<select value={editEvent.nextBatter || ''} onChange={e => updateEditField('nextBatter', e.target.value)}><option value="">None / last man</option>{allPlayers.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
           <label>Incoming batter end<select value={editEvent.nextBatterEnd || ''} onChange={e => updateEditField('nextBatterEnd', e.target.value)}><option value="">None / last man</option><option value="striker">Striker</option><option value="non-striker">Non-striker</option></select></label>
+          <div className="commentary-edit-field">
+            <div className="commentary-edit-head"><span>Commentary</span><button className="secondary small-button" onClick={regenerateEditCommentary}>Regenerate</button></div>
+            <textarea value={editEvent.commentary || ''} onChange={e => updateEditField('commentary', e.target.value)} />
+            <p className="muted small">Editing this field preserves your wording when scoring details change.</p>
+          </div>
           <div className="actions-row"><button className="secondary" onClick={() => setEditOpen(false)}>Cancel</button><button onClick={saveEdit}>Save edit</button></div>
         </div></div>
       )}
@@ -1743,7 +1785,7 @@ function GamesPanel({ history, openSavedMatch, deleteSavedMatch }) {
                       <div className="commentary-block" key={'commentary-' + inn.number}>
                         <h3>Innings {inn.number} Commentary</h3>
                         {inn.balls.length === 0 ? <p className="muted small">No commentary</p> : inn.balls.map((ball, index) => (
-                          <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.raw}</div>
+                          <div className="commentary-line" key={ball.id}><strong>{legalBallLabel(index, inn)}</strong> · {ball.commentary || ball.raw}</div>
                         ))}
                       </div>
                     ))}
