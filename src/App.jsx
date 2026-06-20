@@ -568,6 +568,10 @@ function bump(map, key, factory) {
   return map.get(key)
 }
 
+function analyticsBalls(innings) {
+  return Array.isArray(innings?.balls) ? innings.balls.filter(Boolean) : []
+}
+
 function summarizeInningsAnalytics(match, innings) {
   const state = computeState(clone(match), clone(innings))
   let fours = 0
@@ -579,7 +583,7 @@ function summarizeInningsAnalytics(match, innings) {
   let noBalls = 0
   const wicketTypes = { bowled: 0, caught: 0, 'run out': 0, unknown: 0 }
 
-  innings.balls.forEach((ball) => {
+  analyticsBalls(innings).forEach((ball) => {
     const batRuns = ball.runsOffBat || 0
     if (batRuns === 4) fours += 1
     if (batRuns === 6) sixes += 1
@@ -708,6 +712,7 @@ function analyzeMatches(historyItems, filters = {}) {
 
         breakdown.state.batting.forEach((player) => {
           const row = bump(batting, player.name, createPlayerBatting)
+          if (!row) return
           row.innings += 1
           row.runs += player.runs
           row.balls += player.balls
@@ -715,7 +720,7 @@ function analyzeMatches(historyItems, filters = {}) {
           else row.dismissals += 1
         })
 
-        breakdown.innings.balls.forEach((ball) => {
+        analyticsBalls(breakdown.innings).forEach((ball) => {
           const row = bump(batting, ball.batter, createPlayerBatting)
           if (!row) return
           if ((ball.runsOffBat || 0) === 4) row.fours += 1
@@ -729,11 +734,12 @@ function analyzeMatches(historyItems, filters = {}) {
       if (includeBowlingTeam) {
         breakdown.state.bowling.forEach((player) => {
           const row = bump(bowling, player.name, createPlayerBowling)
+          if (!row) return
           row.balls += player.balls
           row.runs += player.runs
           row.wickets += player.wickets
         })
-        breakdown.innings.balls.forEach((ball) => {
+        analyticsBalls(breakdown.innings).forEach((ball) => {
           const row = bump(bowling, ball.bowler, createPlayerBowling)
           if (!row) return
           if (ball.legalBall && (ball.runsOffBat || 0) === 0 && (ball.extras || 0) === 0) row.dots += 1
