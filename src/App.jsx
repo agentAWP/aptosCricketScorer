@@ -463,25 +463,34 @@ function matchSavedAt(item, match) {
   return item.savedAt || match.savedAt || match.updated_at || match.createdAt
 }
 
+function matchCreatedAt(item, match = item.match || item) {
+  return match.createdAt || item.createdAt || matchSavedAt(item, match)
+}
+
 function matchSeason(item) {
   const match = item.match || item
-  const date = new Date(matchSavedAt(item, match))
+  const date = new Date(matchCreatedAt(item, match))
   if (Number.isNaN(date.getTime())) return 'Unknown'
   return String(date.getFullYear())
 }
 
 function groupHistoryByDay(history) {
   const groups = []
-  ;(history || []).forEach((item, index) => {
+  const ordered = [...(history || [])].sort((a, b) => {
+    const aTime = new Date(matchCreatedAt(a)).getTime()
+    const bTime = new Date(matchCreatedAt(b)).getTime()
+    return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
+  })
+  ordered.forEach((item, index) => {
     const match = item.match || item
-    const savedAt = matchSavedAt(item, match)
-    const day = formatMatchDay(savedAt)
+    const createdAt = matchCreatedAt(item, match)
+    const day = formatMatchDay(createdAt)
     let group = groups.find(entry => entry.day === day)
     if (!group) {
       group = { day, items: [] }
       groups.push(group)
     }
-    group.items.push({ item, index, savedAt })
+    group.items.push({ item, index, createdAt })
   })
   return groups
 }
@@ -1646,6 +1655,26 @@ function PlayerManagement({ match, onRename, onAdd, onMove }) {
   )
 }
 
+function MatchSetupSummary({ match }) {
+  const firstBattingTeam = match.innings?.[0]?.battingTeamKey
+  const formatMembers = players => (players || []).filter(Boolean).join(', ') || 'No players listed'
+  return (
+    <section className="match-setup-summary">
+      <div className="match-setup-head">
+        <div>
+          <div className="panel-kicker">Match Setup</div>
+          <h3>{match.overs || '—'} overs · {firstBattingTeam ? `${teamLabel(firstBattingTeam)} batted first` : 'Batting order unavailable'}</h3>
+        </div>
+        {match.sharedPlayer && <span className="badge">Shared: {match.sharedPlayer}</span>}
+      </div>
+      <div className="match-rosters">
+        <div><strong>Team 1</strong><span>{formatMembers(match.team1Players)}</span></div>
+        <div><strong>Team 2</strong><span>{formatMembers(match.team2Players)}</span></div>
+      </div>
+    </section>
+  )
+}
+
 function GamesPanel({ history, openSavedMatch, deleteSavedMatch }) {
   const groupedHistory = groupHistoryByDay(history)
   return (
@@ -1662,9 +1691,9 @@ function GamesPanel({ history, openSavedMatch, deleteSavedMatch }) {
           {history.length === 0 ? <p className="muted">No saved matches yet.</p> : groupedHistory.map(group => (
             <section className="saved-date-group" key={group.day}>
               <h3>{group.day}</h3>
-              {group.items.map(({ item, index, savedAt }) => {
+              {group.items.map(({ item, index, createdAt }) => {
                 const savedMatch = item.match || item
-                const displayDate = formatMatchDate(savedAt)
+                const displayDate = formatMatchDate(createdAt)
                 const scorecardTargetId = `scorecard-${item.id || item.gameNumber || index}`
                 const commentaryTargetId = `commentary-${item.id || item.gameNumber || index}`
             return (
@@ -1676,6 +1705,7 @@ function GamesPanel({ history, openSavedMatch, deleteSavedMatch }) {
                     <button className="secondary danger-button small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); deleteSavedMatch(item) }}>Delete</button>
                   </span>
                 </summary>
+                <MatchSetupSummary match={savedMatch} />
                 <MatchSummaryCard match={savedMatch} title={'Match ' + (item.gameNumber || '—')} compact />
                 <div className="detail-actions"><CopyScorecardImageButton targetId={scorecardTargetId} /></div>
                 <div id={scorecardTargetId} className="scorecard-export-target">
